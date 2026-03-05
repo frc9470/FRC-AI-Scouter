@@ -21,6 +21,8 @@ Run:
 """
 
 import sys
+import os
+import json
 import cv2
 import numpy as np
 
@@ -191,6 +193,79 @@ def point_in_poly(pt, poly):
     return cv2.pointPolygonTest(poly, pt, False) >= 0
 
 
+def get_roi_cache_path():
+    return os.path.join(os.path.dirname(__file__), "roi_cache.json")
+
+
+def load_roi_cache(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_roi_cache(path, cache):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        print(f"Warning: failed to save ROI cache to {path}: {e}")
+
+
+def poly_from_cache(raw):
+    if not isinstance(raw, list) or len(raw) < 3:
+        return np.array([], dtype=np.int32)
+    try:
+        poly = np.array(raw, dtype=np.int32)
+    except Exception:
+        return np.array([], dtype=np.int32)
+    if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
+        return np.array([], dtype=np.int32)
+    return poly
+
+
+def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
+    img_h, img_w = frame.shape[:2]
+    target_w, target_h = display_size
+    scale = min(target_w / img_w, target_h / img_h)
+    draw_w = max(1, int(round(img_w * scale)))
+    draw_h = max(1, int(round(img_h * scale)))
+    pad_x = max(0, (target_w - draw_w) // 2)
+    pad_y = max(0, (target_h - draw_h) // 2)
+
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(win_name, target_w, target_h)
+
+    disp_pts = np.array(
+        [[int(round(px * scale + pad_x)), int(round(py * scale + pad_y))] for px, py in poly],
+        dtype=np.int32,
+    )
+
+    while True:
+        vis = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        resized = cv2.resize(frame, (draw_w, draw_h), interpolation=cv2.INTER_LINEAR)
+        vis[pad_y:pad_y + draw_h, pad_x:pad_x + draw_w] = resized
+        cv2.polylines(vis, [disp_pts], True, (0, 255, 255), 3)
+        cv2.putText(vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, prompt, (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.imshow(win_name, vis)
+
+        k = cv2.waitKey(20) & 0xFF
+        if k in (ord("y"), ord("Y"), 13):
+            cv2.destroyWindow(win_name)
+            return "use"
+        if k in (ord("n"), ord("N")):
+            cv2.destroyWindow(win_name)
+            return "redraw"
+        if k in (27, ord("s"), ord("S")):
+            cv2.destroyWindow(win_name)
+            return "skip"
+
+
 # ----------------------------
 # Main analysis
 # ----------------------------
@@ -212,15 +287,55 @@ def main():
         raise RuntimeError("Could not read first frame.")
     h, w = frame0.shape[:2]
     screen_w, screen_h = get_screen_size()
+    cache_path = get_roi_cache_path()
+    roi_cache = load_roi_cache(cache_path)
+    video_key = os.path.basename(video_path)
+    cached = roi_cache.get(video_key, {})
+
+    cached_basket_poly = poly_from_cache(cached.get("basket_poly", []))
+    cached_zone_poly = poly_from_cache(cached.get("zone_poly", []))
+    cached_size = cached.get("frame_size", [])
+    cache_size_match = (
+        isinstance(cached_size, list)
+        and len(cached_size) == 2
+        and int(cached_size[0]) == int(w)
+        and int(cached_size[1]) == int(h)
+    )
+    if not cache_size_match:
+        cached_basket_poly = np.array([], dtype=np.int32)
+        cached_zone_poly = np.array([], dtype=np.int32)
 
     # Ask user to define basket opening ROI (polygon)
-    basket_poly = PolyDrawer(
-        "Draw Basket ROI",
-        "LEFT click: add point | RIGHT click: undo\n"
-        "ENTER: finish (>=3 points) | ESC: cancel (empty)\n"
-        "Tip: outline the basket opening / net area tightly.",
-        display_size=(screen_w, screen_h),
-    ).draw(frame0)
+    if cached_basket_poly.size != 0:
+        choice = confirm_cached_poly(
+            frame0,
+            cached_basket_poly,
+            "Cached Basket ROI",
+            "Cached Basket ROI Found",
+            "Y/Enter: use this ROI | N: redraw | ESC: cancel",
+            display_size=(screen_w, screen_h),
+        )
+        if choice == "use":
+            basket_poly = cached_basket_poly
+        elif choice == "redraw":
+            basket_poly = PolyDrawer(
+                "Draw Basket ROI",
+                "LEFT click: add point | RIGHT click: undo\n"
+                "ENTER: finish (>=3 points) | ESC: cancel (empty)\n"
+                "Tip: outline the basket opening / net area tightly.",
+                display_size=(screen_w, screen_h),
+            ).draw(frame0)
+        else:
+            print("Basket ROI selection canceled. Exiting.")
+            sys.exit(0)
+    else:
+        basket_poly = PolyDrawer(
+            "Draw Basket ROI",
+            "LEFT click: add point | RIGHT click: undo\n"
+            "ENTER: finish (>=3 points) | ESC: cancel (empty)\n"
+            "Tip: outline the basket opening / net area tightly.",
+            display_size=(screen_w, screen_h),
+        ).draw(frame0)
 
     if basket_poly.size == 0:
         print("No basket ROI provided. Exiting.")
@@ -228,16 +343,47 @@ def main():
 
     # Optional: define a "9470 shooting zone" ROI to approximate "shots by 9470"
     # (Define where 9470 typically shoots from; count makes only if the ball was last seen in this zone.)
-    zone_poly = PolyDrawer(
-        "Optional: Draw 9470 Shooting Zone ROI",
-        "OPTIONAL\n"
-        "LEFT click: add point | RIGHT click: undo\n"
-        "ENTER: finish (>=3 points) | ESC: skip\n"
-        "Tip: roughly outline the floor area near robot 9470's shooter position.",
-        display_size=(screen_w, screen_h),
-    ).draw(frame0)
+    if cached_zone_poly.size != 0:
+        zone_choice = confirm_cached_poly(
+            frame0,
+            cached_zone_poly,
+            "Cached 9470 Zone ROI",
+            "Cached 9470 Zone ROI Found",
+            "Y/Enter: use this ROI | N: redraw | S/ESC: skip zone",
+            display_size=(screen_w, screen_h),
+        )
+        if zone_choice == "use":
+            zone_poly = cached_zone_poly
+        elif zone_choice == "redraw":
+            zone_poly = PolyDrawer(
+                "Optional: Draw 9470 Shooting Zone ROI",
+                "OPTIONAL\n"
+                "LEFT click: add point | RIGHT click: undo\n"
+                "ENTER: finish (>=3 points) | ESC: skip\n"
+                "Tip: roughly outline the floor area near robot 9470's shooter position.",
+                display_size=(screen_w, screen_h),
+            ).draw(frame0)
+        else:
+            zone_poly = np.array([], dtype=np.int32)
+    else:
+        zone_poly = PolyDrawer(
+            "Optional: Draw 9470 Shooting Zone ROI",
+            "OPTIONAL\n"
+            "LEFT click: add point | RIGHT click: undo\n"
+            "ENTER: finish (>=3 points) | ESC: skip\n"
+            "Tip: roughly outline the floor area near robot 9470's shooter position.",
+            display_size=(screen_w, screen_h),
+        ).draw(frame0)
 
     use_zone = zone_poly.size != 0
+
+    # Persist ROI selections for this video filename so future runs can reuse them.
+    roi_cache[video_key] = {
+        "frame_size": [int(w), int(h)],
+        "basket_poly": basket_poly.tolist(),
+        "zone_poly": zone_poly.tolist() if use_zone else [],
+    }
+    save_roi_cache(cache_path, roi_cache)
 
     # HSV tuner
     hsv_win_w = min(1200, max(900, int(screen_w * 0.6)))
