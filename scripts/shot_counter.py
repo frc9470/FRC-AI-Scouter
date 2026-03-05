@@ -545,11 +545,11 @@ def main():
                 "zone_ok": True,
                 "recently_moving": False,
                 "airborne": False,
-                "made_highlight_until": -1,
             }
             next_track_id += 1
 
         # Per-track make logic: count a make immediately on ROI entry.
+        made_track_id_this_frame = None
         for tid, track in tracks.items():
             visible = (frame_idx - track["last_seen_frame"]) <= 1
             zone_ok = True
@@ -568,7 +568,7 @@ def main():
                     t = frame_idx / fps
                     made_events.append((frame_idx, t, tid))
                     track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
-                    track["made_highlight_until"] = frame_idx + int(1.0 * fps)
+                    made_track_id_this_frame = tid
                     if AUTO_PAUSE_ON_MAKE:
                         auto_pause_pending = True
                     push_event(
@@ -640,7 +640,7 @@ def main():
             x, y, ww, hh = track["bbox"]
             cxy = track["centroid"]
 
-            if frame_idx <= track.get("made_highlight_until", -1):
+            if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
                 color = (255, 0, 0)  # blue: counted as make recently
                 thickness = 3
             elif age <= 1 and track["preferred"]:
@@ -658,7 +658,7 @@ def main():
             label = f"T{tid} m={track['motion_ema']:.1f}"
             if track["inside_basket"]:
                 label += " IN"
-            if frame_idx <= track.get("made_highlight_until", -1):
+            if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
                 label += " MADE"
             if STRICT_ZONE_GATE and not track["zone_ok"]:
                 label += " Z0"
