@@ -248,7 +248,6 @@ def main():
     cv2.resizeWindow(main_win, screen_w, screen_h)
 
     # Tunables (adjust as needed)
-    MAX_MISSED_FRAMES_AFTER_ENTRY = int(0.30 * fps)  # if ball disappears soon after entry, count it
     MIN_CONTOUR_AREA = 80    # reject noise (increase if too many false detections)
     MAX_CONTOUR_AREA = 20_000  # reject giant blobs
     MAX_TRACKABLE_AREA = 8_000  # prefer smaller blobs over giant fuel piles
@@ -257,7 +256,6 @@ def main():
     TRACK_MAX_MISSED = 8
     MIN_TRACK_MOTION_PX = 2.5
     MOTION_MEMORY_FRAMES = int(0.50 * fps)
-    MIN_DOWNWARD_EXIT_PX = 4  # minimum downward motion between inside and outside centroid
     TRACK_COOLDOWN_FRAMES = int(0.40 * fps)
     MAKE_DEBUG_PRINT = True
     EVENT_LOG_MAX = 12
@@ -268,7 +266,6 @@ def main():
     next_track_id = 1
 
     zone_window_frames = int(1.0 * fps)
-    basket_y_max = int(np.max(basket_poly[:, 1]))
     airborne_y_max = int(0.86 * h)
 
     made_events = []  # list of (frame_idx, seconds, track_id)
@@ -392,23 +389,18 @@ def main():
                 "last_seen_in_zone_frame": zone_seen_frame,
                 "motion_ema": 0.0,
                 "last_motion_frame": -10_000,
-                "in_basket": False,
-                "entered_basket_frame": None,
+                "inside_basket": False,
                 "prev_inside_basket": False,
-                "last_inside_centroid": None,
                 "cooldown_until": -1,
                 "visible": True,
                 "preferred": False,
                 "zone_ok": True,
                 "recently_moving": False,
                 "airborne": False,
-                "recent_downward_exit": False,
-                "recent_ball_missing": False,
-                "recent_timed_out": False,
             }
             next_track_id += 1
 
-        # Per-track make logic
+        # Per-track make logic: count a make immediately on ROI entry.
         for tid, track in tracks.items():
             visible = (frame_idx - track["last_seen_frame"]) <= 1
             zone_ok = True
@@ -419,80 +411,30 @@ def main():
             airborne = track["centroid"][1] <= airborne_y_max
 
             inside_basket = visible and point_in_poly(track["centroid"], basket_poly)
-            if inside_basket:
-                track["last_inside_centroid"] = track["centroid"]
-
-            downward_exit = False
-            ball_missing = False
-            timed_out = False
-
-            if frame_idx >= track["cooldown_until"]:
-                if not track["in_basket"]:
-                    entry_zone_ok = (not use_zone) or (not STRICT_ZONE_GATE) or zone_ok
-                    entry_ok = entry_zone_ok and (recently_moving or airborne)
-                    if inside_basket and entry_ok:
-                        track["in_basket"] = True
-                        track["entered_basket_frame"] = frame_idx
-                        push_event(
-                            f"[MAKEDBG] f{frame_idx} T{tid} ENTER basket "
-                            f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
-                        )
-                    elif inside_basket and not track["prev_inside_basket"] and not entry_ok:
-                        push_event(
-                            f"[MAKEDBG] f{frame_idx} T{tid} REJECT enter "
-                            f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
-                        )
+            entering_basket = inside_basket and not track["prev_inside_basket"]
+            if frame_idx >= track["cooldown_until"] and entering_basket:
+                entry_zone_ok = (not use_zone) or (not STRICT_ZONE_GATE) or zone_ok
+                entry_ok = entry_zone_ok and (recently_moving or airborne)
+                if entry_ok:
+                    t = frame_idx / fps
+                    made_events.append((frame_idx, t, tid))
+                    track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
+                    push_event(
+                        f"[MAKEDBG] f{frame_idx} T{tid} MAKE (entry) "
+                        f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
+                    )
                 else:
-                    if (
-                        track["prev_inside_basket"]
-                        and not inside_basket
-                        and visible
-                        and track["last_inside_centroid"] is not None
-                    ):
-                        dy = track["centroid"][1] - track["last_inside_centroid"][1]
-                        downward_exit = (
-                            dy >= MIN_DOWNWARD_EXIT_PX
-                            and track["centroid"][1] > track["last_inside_centroid"][1]
-                            and track["centroid"][1] >= (basket_y_max + 1)
-                        )
-                        if downward_exit:
-                            push_event(
-                                f"[MAKEDBG] f{frame_idx} T{tid} DOWNWARD EXIT "
-                                f"(dy={dy:.1f}, y={track['centroid'][1]:.1f}, basket_y_max={basket_y_max})"
-                            )
-
-                    ball_missing = (frame_idx - track["last_seen_frame"]) > 2
-                    timed_out = (frame_idx - track["entered_basket_frame"]) > MAX_MISSED_FRAMES_AFTER_ENTRY
-
-                    if downward_exit or (ball_missing and not timed_out):
-                        t = frame_idx / fps
-                        made_events.append((track["entered_basket_frame"], t, tid))
-                        reason = "downward-exit" if downward_exit else "disappear"
-                        push_event(
-                            f"[MAKEDBG] f{frame_idx} T{tid} MAKE ({reason}) "
-                            f"entered_f={track['entered_basket_frame']} t={t:.3f}s"
-                        )
-                        track["in_basket"] = False
-                        track["entered_basket_frame"] = None
-                        track["last_inside_centroid"] = None
-                        track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
-                    elif timed_out:
-                        push_event(
-                            f"[MAKEDBG] f{frame_idx} T{tid} TIMEOUT "
-                            f"(entered_f={track['entered_basket_frame']}, last_seen_delta={frame_idx - track['last_seen_frame']})"
-                        )
-                        track["in_basket"] = False
-                        track["entered_basket_frame"] = None
-                        track["last_inside_centroid"] = None
+                    push_event(
+                        f"[MAKEDBG] f{frame_idx} T{tid} REJECT enter "
+                        f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
+                    )
 
             track["visible"] = visible
+            track["inside_basket"] = inside_basket
             track["zone_ok"] = zone_ok
             track["recently_moving"] = recently_moving
             track["airborne"] = airborne
             track["preferred"] = visible and recently_moving and airborne
-            track["recent_downward_exit"] = downward_exit
-            track["recent_ball_missing"] = ball_missing
-            track["recent_timed_out"] = timed_out
             track["prev_inside_basket"] = inside_basket
 
         # Drop very stale tracks to keep state compact.
@@ -559,8 +501,8 @@ def main():
             cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, thickness)
             cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 5, color, -1)
             label = f"T{tid} m={track['motion_ema']:.1f}"
-            if track["in_basket"]:
-                label += " IB"
+            if track["inside_basket"]:
+                label += " IN"
             if STRICT_ZONE_GATE and not track["zone_ok"]:
                 label += " Z0"
             if track["preferred"]:
@@ -579,11 +521,11 @@ def main():
         if debug_overlays:
             visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
             preferred_tracks = [tr for tr in visible_tracks if tr["preferred"]]
-            in_basket_ids = [tid for tid, tr in tracks.items() if tr["in_basket"]]
+            inside_ids = [tid for tid, tr in tracks.items() if tr["inside_basket"]]
             debug_lines = [
                 f"Debug[d]: ON  candidates={len(candidates)} trackable={len(trackable_indices)}",
                 f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
-                f"in_basket_tracks={in_basket_ids[:6]} use_zone={use_zone}",
+                f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
                 f"airborne_y_max={airborne_y_max} motion_px>={MIN_TRACK_MOTION_PX}",
                 f"strict_zone_gate[z]={STRICT_ZONE_GATE}",
                 f"make_debug_print[m]={MAKE_DEBUG_PRINT}",
