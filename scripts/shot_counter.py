@@ -24,22 +24,65 @@ import sys
 import cv2
 import numpy as np
 
+
+def get_screen_size():
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        w = int(root.winfo_screenwidth())
+        h = int(root.winfo_screenheight())
+        root.destroy()
+        return w, h
+    except Exception:
+        print("Hit exception when fetching screen size")
+        # Some random values to at least make it show larger.
+        return 3072, 1920
+
+
+def resize_to_fit(image, max_w, max_h):
+    h, w = image.shape[:2]
+    if w <= 0 or h <= 0:
+        return image
+    scale = min(max_w / w, max_h / h)
+    out_w = max(1, int(round(w * scale)))
+    out_h = max(1, int(round(h * scale)))
+    return cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+
+
 # ----------------------------
 # Utility: polygon ROI drawing
 # ----------------------------
 class PolyDrawer:
-    def __init__(self, win_name, help_text):
+    def __init__(self, win_name, help_text, display_size=None):
         self.win = win_name
         self.help_text = help_text
         self.pts = []
         self.done = False
         self.img = None
+        self.display_size = display_size
+        self.scale = 1.0
+        self.pad_x = 0
+        self.pad_y = 0
+        self.draw_w = 0
+        self.draw_h = 0
 
     def _mouse(self, event, x, y, flags, param):
         if self.done:
             return
+        in_bounds = (
+            self.pad_x <= x < self.pad_x + self.draw_w
+            and self.pad_y <= y < self.pad_y + self.draw_h
+        )
+        if not in_bounds:
+            return
+        x_img = (x - self.pad_x) / self.scale
+        y_img = (y - self.pad_y) / self.scale
+        x_img = int(np.clip(round(x_img), 0, self.img.shape[1] - 1))
+        y_img = int(np.clip(round(y_img), 0, self.img.shape[0] - 1))
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.pts.append((x, y))
+            self.pts.append((x_img, y_img))
         elif event == cv2.EVENT_RBUTTONDOWN:
             # undo last point
             if self.pts:
@@ -47,16 +90,44 @@ class PolyDrawer:
 
     def draw(self, frame):
         self.img = frame.copy()
+        img_h, img_w = self.img.shape[:2]
+        if self.display_size is None:
+            target_w, target_h = img_w, img_h
+        else:
+            target_w, target_h = self.display_size
+        self.scale = min(target_w / img_w, target_h / img_h)
+        self.draw_w = max(1, int(round(img_w * self.scale)))
+        self.draw_h = max(1, int(round(img_h * self.scale)))
+        self.pad_x = max(0, (target_w - self.draw_w) // 2)
+        self.pad_y = max(0, (target_h - self.draw_h) // 2)
+
         cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.win, target_w, target_h)
         cv2.setMouseCallback(self.win, self._mouse)
 
         while True:
-            vis = self.img.copy()
+            vis = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            resized = cv2.resize(self.img, (self.draw_w, self.draw_h), interpolation=cv2.INTER_LINEAR)
+            vis[self.pad_y:self.pad_y + self.draw_h, self.pad_x:self.pad_x + self.draw_w] = resized
             # Draw points + edges
             for p in self.pts:
-                cv2.circle(vis, p, 4, (0, 255, 0), -1)
+                sp = (
+                    int(round(p[0] * self.scale + self.pad_x)),
+                    int(round(p[1] * self.scale + self.pad_y)),
+                )
+                cv2.circle(vis, sp, 4, (0, 255, 0), -1)
             if len(self.pts) >= 2:
-                cv2.polylines(vis, [np.array(self.pts, dtype=np.int32)], False, (0, 255, 0), 2)
+                disp_pts = np.array(
+                    [
+                        [
+                            int(round(px * self.scale + self.pad_x)),
+                            int(round(py * self.scale + self.pad_y)),
+                        ]
+                        for px, py in self.pts
+                    ],
+                    dtype=np.int32,
+                )
+                cv2.polylines(vis, [disp_pts], False, (0, 255, 0), 2)
 
             # Overlay instructions
             y0 = 20
@@ -139,13 +210,15 @@ def main():
     if not ret:
         raise RuntimeError("Could not read first frame.")
     h, w = frame0.shape[:2]
+    screen_w, screen_h = get_screen_size()
 
     # Ask user to define basket opening ROI (polygon)
     basket_poly = PolyDrawer(
         "Draw Basket ROI",
         "LEFT click: add point | RIGHT click: undo\n"
         "ENTER: finish (>=3 points) | ESC: cancel (empty)\n"
-        "Tip: outline the basket opening / net area tightly."
+        "Tip: outline the basket opening / net area tightly.",
+        display_size=(screen_w, screen_h),
     ).draw(frame0)
 
     if basket_poly.size == 0:
@@ -159,13 +232,17 @@ def main():
         "OPTIONAL\n"
         "LEFT click: add point | RIGHT click: undo\n"
         "ENTER: finish (>=3 points) | ESC: skip\n"
-        "Tip: roughly outline the floor area near robot 9470's shooter position."
+        "Tip: roughly outline the floor area near robot 9470's shooter position.",
+        display_size=(screen_w, screen_h),
     ).draw(frame0)
 
     use_zone = zone_poly.size != 0
 
     # HSV tuner
     tuner_win = make_hsv_tuner()
+    main_win = "Shot Counter (Left=Video, Right=Mask)"
+    cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(main_win, screen_w, screen_h)
 
     # Tracking state
     # We'll keep a simple nearest-centroid tracker for a single most-likely ball.
@@ -385,12 +462,10 @@ def main():
 
         # Show side-by-side mask for tuning
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        combo = np.hstack([
-            cv2.resize(vis, (w // 2, h // 2)),
-            cv2.resize(mask_bgr, (w // 2, h // 2))
-        ])
+        combo = np.hstack([vis, mask_bgr])
+        combo = resize_to_fit(combo, screen_w, screen_h)
 
-        cv2.imshow("Shot Counter (Left=Video, Right=Mask)", combo)
+        cv2.imshow(main_win, combo)
         cv2.imshow(tuner_win, np.zeros((1, 600, 3), dtype=np.uint8))  # just to keep trackbars visible
 
         key = cv2.waitKey(1) & 0xFF
