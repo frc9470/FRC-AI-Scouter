@@ -1,0 +1,652 @@
+{
+  "video_path": "assets/img_3851_auto_burst_1.mov",
+  "video_filename": "img_3851_auto_burst_1.mov",
+  "fps": 29.970029830932617,
+  "frame_size": [
+    1920,
+    1080
+  ],
+  "total_makes": 32,
+  "made_events": [
+    {
+      "frame": 40,
+      "seconds": 1.3346666728611416,
+      "track_id": 48,
+      "centroid": [
+        1261.5,
+        392.0
+      ],
+      "bbox": [
+        1245,
+        374,
+        33,
+        36
+      ],
+      "area": 998.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 46,
+      "seconds": 1.534866673790313,
+      "track_id": 14,
+      "centroid": [
+        1354.0,
+        397.5
+      ],
+      "bbox": [
+        1333,
+        377,
+        42,
+        41
+      ],
+      "area": 1342.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 46,
+      "seconds": 1.534866673790313,
+      "track_id": 44,
+      "centroid": [
+        1287.5,
+        397.5
+      ],
+      "bbox": [
+        1272,
+        381,
+        31,
+        33
+      ],
+      "area": 824.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 51,
+      "seconds": 1.7017000078979556,
+      "track_id": 47,
+      "centroid": [
+        1224.0,
+        400.0
+      ],
+      "bbox": [
+        1198,
+        361,
+        52,
+        78
+      ],
+      "area": 2342.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 60,
+      "seconds": 2.0020000092917125,
+      "track_id": 40,
+      "centroid": [
+        1201.0,
+        409.0
+      ],
+      "bbox": [
+        1183,
+        389,
+        36,
+        40
+      ],
+      "area": 1099.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 60,
+      "seconds": 2.0020000092917125,
+      "track_id": 53,
+      "centroid": [
+        1311.5,
+        394.0
+      ],
+      "bbox": [
+        1293,
+        375,
+        37,
+        38
+      ],
+      "area": 1079.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 61,
+      "seconds": 2.035366676113241,
+      "track_id": 44,
+      "centroid": [
+        1215.0,
+        437.5
+      ],
+      "bbox": [
+        1197,
+        417,
+        36,
+        41
+      ],
+      "area": 1117.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 62,
+      "seconds": 2.0687333429347694,
+      "track_id": 14,
+      "centroid": [
+        1330.5,
+        453.0
+      ],
+      "bbox": [
+        1311,
+        433,
+        39,
+        40
+      ],
+      "area": 1093.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 66,
+      "seconds": 2.2022000102208836,
+      "track_id": 65,
+      "centroid": [
+        1299.0,
+        392.0
+      ],
+      "bbox": [
+        1279,
+        373,
+        40,
+        38
+      ],
+      "area": 1243.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 73,
+      "seconds": 2.4357666779715834,
+      "track_id": 40,
+      "centroid": [
+        1227.5,
+        391.0
+      ],
+      "bbox": [
+        1208,
+        372,
+        39,
+        38
+      ],
+      "area": 1111.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 75,
+      "seconds": 2.5025000116146408,
+      "track_id": 44,
+      "centroid": [
+        1250.0,
+        442.0
+      ],
+      "bbox": [
+        1234,
+        425,
+        32,
+        34
+      ],
+      "area": 897.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 79,
+      "seconds": 2.635966678900755,
+      "track_id": 37,
+      "centroid": [
+        1308.5,
+        412.0
+      ],
+      "bbox": [
+        1292,
+        391,
+        33,
+        42
+      ],
+      "area": 1059.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 81,
+      "seconds": 2.702700012543812,
+      "track_id": 14,
+      "centroid": [
+        1326.5,
+        460.0
+      ],
+      "bbox": [
+        1307,
+        446,
+        39,
+        28
+      ],
+      "area": 881.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 85,
+      "seconds": 2.836166679829926,
+      "track_id": 51,
+      "centroid": [
+        1221.0,
+        397.0
+      ],
+      "bbox": [
+        1202,
+        376,
+        38,
+        42
+      ],
+      "area": 1259.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 86,
+      "seconds": 2.8695333466514548,
+      "track_id": 40,
+      "centroid": [
+        1232.0,
+        419.5
+      ],
+      "bbox": [
+        1214,
+        399,
+        36,
+        41
+      ],
+      "area": 1193.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 87,
+      "seconds": 2.902900013472983,
+      "track_id": 44,
+      "centroid": [
+        1245.5,
+        446.5
+      ],
+      "bbox": [
+        1228,
+        427,
+        35,
+        39
+      ],
+      "area": 1008.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 96,
+      "seconds": 3.20320001486674,
+      "track_id": 69,
+      "centroid": [
+        1261.5,
+        410.0
+      ],
+      "bbox": [
+        1243,
+        390,
+        37,
+        40
+      ],
+      "area": 1144.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 101,
+      "seconds": 3.3700333489743826,
+      "track_id": 44,
+      "centroid": [
+        1311.0,
+        453.5
+      ],
+      "bbox": [
+        1278,
+        434,
+        66,
+        39
+      ],
+      "area": 1385.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 103,
+      "seconds": 3.43676668261744,
+      "track_id": 89,
+      "centroid": [
+        1251.0,
+        402.0
+      ],
+      "bbox": [
+        1235,
+        385,
+        32,
+        34
+      ],
+      "area": 847.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 106,
+      "seconds": 3.5368666830820255,
+      "track_id": 96,
+      "centroid": [
+        1345.0,
+        410.5
+      ],
+      "bbox": [
+        1327,
+        390,
+        36,
+        41
+      ],
+      "area": 1208.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 111,
+      "seconds": 3.703700017189668,
+      "track_id": 75,
+      "centroid": [
+        1258.0,
+        404.0
+      ],
+      "bbox": [
+        1242,
+        387,
+        32,
+        34
+      ],
+      "area": 856.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 116,
+      "seconds": 3.870533351297311,
+      "track_id": 85,
+      "centroid": [
+        1313.5,
+        394.5
+      ],
+      "bbox": [
+        1297,
+        375,
+        33,
+        39
+      ],
+      "area": 1033.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 120,
+      "seconds": 4.004000018583425,
+      "track_id": 89,
+      "centroid": [
+        1308.5,
+        458.5
+      ],
+      "bbox": [
+        1287,
+        444,
+        43,
+        29
+      ],
+      "area": 1000.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 122,
+      "seconds": 4.070733352226482,
+      "track_id": 76,
+      "centroid": [
+        1247.0,
+        387.5
+      ],
+      "bbox": [
+        1212,
+        366,
+        70,
+        43
+      ],
+      "area": 2143.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 123,
+      "seconds": 4.104100019048011,
+      "track_id": 75,
+      "centroid": [
+        1258.5,
+        414.0
+      ],
+      "bbox": [
+        1223,
+        394,
+        71,
+        40
+      ],
+      "area": 1934.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 124,
+      "seconds": 4.137466685869539,
+      "track_id": 69,
+      "centroid": [
+        1271.5,
+        441.0
+      ],
+      "bbox": [
+        1237,
+        422,
+        69,
+        38
+      ],
+      "area": 1969.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 128,
+      "seconds": 4.2709333531556535,
+      "track_id": 88,
+      "centroid": [
+        1197.5,
+        393.5
+      ],
+      "bbox": [
+        1177,
+        375,
+        41,
+        37
+      ],
+      "area": 1160.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 134,
+      "seconds": 4.471133354084825,
+      "track_id": 85,
+      "centroid": [
+        1301.0,
+        458.5
+      ],
+      "bbox": [
+        1282,
+        444,
+        38,
+        29
+      ],
+      "area": 822.0,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 139,
+      "seconds": 4.637966688192467,
+      "track_id": 108,
+      "centroid": [
+        1238.5,
+        400.0
+      ],
+      "bbox": [
+        1222,
+        382,
+        33,
+        36
+      ],
+      "area": 1010.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 140,
+      "seconds": 4.671333355013996,
+      "track_id": 88,
+      "centroid": [
+        1249.0,
+        424.0
+      ],
+      "bbox": [
+        1231,
+        408,
+        36,
+        32
+      ],
+      "area": 830.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 140,
+      "seconds": 4.671333355013996,
+      "track_id": 109,
+      "centroid": [
+        1301.5,
+        390.0
+      ],
+      "bbox": [
+        1284,
+        371,
+        35,
+        38
+      ],
+      "area": 1024.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    },
+    {
+      "frame": 141,
+      "seconds": 4.704700021835524,
+      "track_id": 69,
+      "centroid": [
+        1263.5,
+        452.0
+      ],
+      "bbox": [
+        1246,
+        435,
+        35,
+        34
+      ],
+      "area": 999.5,
+      "zone_ok": true,
+      "strict_zone_gate": false,
+      "recently_moving": true,
+      "airborne": true
+    }
+  ]
+}

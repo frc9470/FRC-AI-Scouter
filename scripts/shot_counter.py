@@ -543,6 +543,7 @@ def main():
                 "zone_ok": True,
                 "recently_moving": False,
                 "airborne": False,
+                "made_highlight_until": -1,
             }
             next_track_id += 1
 
@@ -565,6 +566,7 @@ def main():
                     t = frame_idx / fps
                     made_events.append((frame_idx, t, tid))
                     track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
+                    track["made_highlight_until"] = frame_idx + int(1.0 * fps)
                     push_event(
                         f"[MAKEDBG] f{frame_idx} T{tid} MAKE (entry) "
                         f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
@@ -634,7 +636,10 @@ def main():
             x, y, ww, hh = track["bbox"]
             cxy = track["centroid"]
 
-            if age <= 1 and track["preferred"]:
+            if frame_idx <= track.get("made_highlight_until", -1):
+                color = (255, 0, 0)  # blue: counted as make recently
+                thickness = 3
+            elif age <= 1 and track["preferred"]:
                 color = (0, 0, 255)
                 thickness = 2
             elif age <= 1:
@@ -649,6 +654,8 @@ def main():
             label = f"T{tid} m={track['motion_ema']:.1f}"
             if track["inside_basket"]:
                 label += " IN"
+            if frame_idx <= track.get("made_highlight_until", -1):
+                label += " MADE"
             if STRICT_ZONE_GATE and not track["zone_ok"]:
                 label += " Z0"
             if track["preferred"]:
@@ -748,11 +755,11 @@ def main():
     cv2.destroyAllWindows()
 
     print("\n=== RESULTS ===")
-    print(f"Total makes counted: {len(made_events)}")
     if made_events:
         print("Make timestamps (seconds):")
         for fi, t, tid in made_events:
             print(f"  track {tid:3d}  frame {fi:6d}  ->  {t:8.3f}s")
+    print(f"\n\nTotal makes counted: {len(made_events)} || file {video_path}")
 
 
 if __name__ == "__main__":
