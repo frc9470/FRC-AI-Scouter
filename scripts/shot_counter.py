@@ -247,30 +247,31 @@ def main():
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
 
-    # Tracking state
-    # We'll keep a simple nearest-centroid tracker for a single most-likely ball.
-    last_centroid = None
-    last_seen_frame = -10_000
-    last_seen_in_zone_frame = -10_000
-
-    # "Made" event logic
-    in_basket = False
-    entered_basket_frame = None
-    prev_inside_basket = False
-    last_inside_centroid = None
-
     # Tunables (adjust as needed)
     MAX_MISSED_FRAMES_AFTER_ENTRY = int(0.30 * fps)  # if ball disappears soon after entry, count it
     MIN_CONTOUR_AREA = 80    # reject noise (increase if too many false detections)
     MAX_CONTOUR_AREA = 20_000  # reject giant blobs
-    MAX_TRACK_DIST = 80      # px; tracker association radius
+    MAX_TRACKABLE_AREA = 8_000  # prefer smaller blobs over giant fuel piles
+    MIN_TRACKABLE_CIRCULARITY = 0.20
+    MAX_TRACK_DIST = 90      # px; association radius
+    TRACK_MAX_MISSED = 8
+    MIN_TRACK_MOTION_PX = 2.5
+    MOTION_MEMORY_FRAMES = int(0.50 * fps)
     MIN_DOWNWARD_EXIT_PX = 4  # minimum downward motion between inside and outside centroid
+    TRACK_COOLDOWN_FRAMES = int(0.40 * fps)
 
+    # Tracks are keyed by integer ID and updated with nearest-neighbor matching.
+    tracks = {}
+    next_track_id = 1
+
+    zone_window_frames = int(1.0 * fps)
     basket_y_mid = (int(np.min(basket_poly[:, 1])) + int(np.max(basket_poly[:, 1]))) / 2.0
+    airborne_y_max = int(0.86 * h)
 
-    made_events = []  # list of (frame_idx, seconds)
+    made_events = []  # list of (frame_idx, seconds, track_id)
     frame_idx = 0
     debug_overlays = True
+    last_event_text = "none"
 
     # Rewind to beginning (we consumed 1 frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -302,103 +303,167 @@ def main():
             (x, y, ww, hh) = cv2.boundingRect(c)
             cx = x + ww / 2.0
             cy = y + hh / 2.0
-            candidates.append((area, (cx, cy), (x, y, ww, hh)))
+            perimeter = cv2.arcLength(c, True)
+            circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 1e-6 else 0.0
+            aspect = (ww / float(hh)) if hh > 0 else 0.0
+            trackable = (
+                area <= MAX_TRACKABLE_AREA
+                and circularity >= MIN_TRACKABLE_CIRCULARITY
+                and 0.45 <= aspect <= 2.2
+            )
+            candidates.append(
+                {
+                    "area": area,
+                    "centroid": (cx, cy),
+                    "bbox": (x, y, ww, hh),
+                    "circularity": circularity,
+                    "trackable": trackable,
+                }
+            )
 
-        # Pick best candidate to track:
-        # - if we already have a centroid, choose nearest
-        # - else choose largest area
-        centroid = None
-        bbox = None
-        if candidates:
-            if last_centroid is not None:
-                best = None
-                best_d = 1e9
-                for area, cxy, bb in candidates:
-                    d = np.hypot(cxy[0] - last_centroid[0], cxy[1] - last_centroid[1])
-                    if d < best_d:
-                        best_d = d
-                        best = (area, cxy, bb)
-                if best is not None and best_d <= MAX_TRACK_DIST:
-                    centroid = best[1]
-                    bbox = best[2]
+        # Multi-object nearest-neighbor association
+        active_track_ids = [
+            tid for tid, tr in tracks.items()
+            if (frame_idx - tr["last_seen_frame"]) <= TRACK_MAX_MISSED
+        ]
+        trackable_indices = [i for i, cand in enumerate(candidates) if cand["trackable"]]
+        pairs = []
+        for tid in active_track_ids:
+            tx, ty = tracks[tid]["centroid"]
+            for ci in trackable_indices:
+                cx, cy = candidates[ci]["centroid"]
+                d = float(np.hypot(cx - tx, cy - ty))
+                if d <= MAX_TRACK_DIST:
+                    pairs.append((d, tid, ci))
+        pairs.sort(key=lambda t: t[0])
+
+        assigned_tracks = set()
+        assigned_candidates = set()
+        for _, tid, ci in pairs:
+            if tid in assigned_tracks or ci in assigned_candidates:
+                continue
+            track = tracks[tid]
+            cand = candidates[ci]
+            prev_centroid = track["centroid"]
+            new_centroid = cand["centroid"]
+            motion = float(np.hypot(new_centroid[0] - prev_centroid[0], new_centroid[1] - prev_centroid[1]))
+
+            track["centroid"] = new_centroid
+            track["bbox"] = cand["bbox"]
+            track["area"] = cand["area"]
+            track["last_seen_frame"] = frame_idx
+            track["motion_ema"] = 0.65 * track["motion_ema"] + 0.35 * motion
+            if motion >= MIN_TRACK_MOTION_PX:
+                track["last_motion_frame"] = frame_idx
+            if use_zone and point_in_poly(new_centroid, zone_poly):
+                track["last_seen_in_zone_frame"] = frame_idx
+
+            assigned_tracks.add(tid)
+            assigned_candidates.add(ci)
+
+        # Spawn new tracks for unmatched trackable candidates.
+        for ci in trackable_indices:
+            if ci in assigned_candidates:
+                continue
+            cand = candidates[ci]
+            zone_seen_frame = -10_000
+            if use_zone and point_in_poly(cand["centroid"], zone_poly):
+                zone_seen_frame = frame_idx
+            tracks[next_track_id] = {
+                "id": next_track_id,
+                "centroid": cand["centroid"],
+                "bbox": cand["bbox"],
+                "area": cand["area"],
+                "last_seen_frame": frame_idx,
+                "last_seen_in_zone_frame": zone_seen_frame,
+                "motion_ema": 0.0,
+                "last_motion_frame": -10_000,
+                "in_basket": False,
+                "entered_basket_frame": None,
+                "prev_inside_basket": False,
+                "last_inside_centroid": None,
+                "cooldown_until": -1,
+                "visible": True,
+                "preferred": False,
+                "zone_ok": True,
+                "recently_moving": False,
+                "airborne": False,
+                "recent_downward_exit": False,
+                "recent_ball_missing": False,
+                "recent_timed_out": False,
+            }
+            next_track_id += 1
+
+        # Per-track make logic
+        for tid, track in tracks.items():
+            visible = (frame_idx - track["last_seen_frame"]) <= 1
+            zone_ok = True
+            if use_zone:
+                zone_ok = (frame_idx - track["last_seen_in_zone_frame"]) <= zone_window_frames
+            recently_moving = (frame_idx - track["last_motion_frame"]) <= MOTION_MEMORY_FRAMES
+            airborne = track["centroid"][1] <= airborne_y_max
+
+            inside_basket = visible and point_in_poly(track["centroid"], basket_poly)
+            if inside_basket:
+                track["last_inside_centroid"] = track["centroid"]
+
+            downward_exit = False
+            ball_missing = False
+            timed_out = False
+
+            if frame_idx >= track["cooldown_until"]:
+                if not track["in_basket"]:
+                    if inside_basket and zone_ok and recently_moving:
+                        track["in_basket"] = True
+                        track["entered_basket_frame"] = frame_idx
                 else:
-                    # fall back to largest
-                    best = max(candidates, key=lambda t: t[0])
-                    centroid = best[1]
-                    bbox = best[2]
-            else:
-                best = max(candidates, key=lambda t: t[0])
-                centroid = best[1]
-                bbox = best[2]
+                    if (
+                        track["prev_inside_basket"]
+                        and not inside_basket
+                        and visible
+                        and track["last_inside_centroid"] is not None
+                    ):
+                        dy = track["centroid"][1] - track["last_inside_centroid"][1]
+                        downward_exit = (
+                            dy >= MIN_DOWNWARD_EXIT_PX
+                            and track["centroid"][1] >= basket_y_mid
+                            and track["last_inside_centroid"][1] >= basket_y_mid
+                        )
 
-        # Update tracker state
-        if centroid is not None:
-            last_centroid = centroid
-            last_seen_frame = frame_idx
+                    ball_missing = (frame_idx - track["last_seen_frame"]) > 2
+                    timed_out = (frame_idx - track["entered_basket_frame"]) > MAX_MISSED_FRAMES_AFTER_ENTRY
 
-            if use_zone and point_in_poly((centroid[0], centroid[1]), zone_poly):
-                last_seen_in_zone_frame = frame_idx
+                    if downward_exit or (ball_missing and not timed_out):
+                        t = frame_idx / fps
+                        made_events.append((track["entered_basket_frame"], t, tid))
+                        reason = "downward-exit" if downward_exit else "disappear"
+                        last_event_text = f"make T{tid} ({reason}) @f{frame_idx}"
+                        track["in_basket"] = False
+                        track["entered_basket_frame"] = None
+                        track["last_inside_centroid"] = None
+                        track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
+                    elif timed_out:
+                        track["in_basket"] = False
+                        track["entered_basket_frame"] = None
+                        track["last_inside_centroid"] = None
 
-        # Determine if we should count based on zone constraint
-        zone_ok = True
-        if use_zone:
-            # Require that ball was seen in 9470 zone within last 1.0s
-            zone_ok = (frame_idx - last_seen_in_zone_frame) <= int(1.0 * fps)
+            track["visible"] = visible
+            track["zone_ok"] = zone_ok
+            track["recently_moving"] = recently_moving
+            track["airborne"] = airborne
+            track["preferred"] = visible and recently_moving and airborne
+            track["recent_downward_exit"] = downward_exit
+            track["recent_ball_missing"] = ball_missing
+            track["recent_timed_out"] = timed_out
+            track["prev_inside_basket"] = inside_basket
 
-        # Basket entry / make logic
-        downward_exit = False
-        ball_missing = False
-        timed_out = False
-        tracked_centroid = None
-        if last_centroid is not None and (frame_idx - last_seen_frame) <= 1:
-            tracked_centroid = (last_centroid[0], last_centroid[1])
-            inside_basket = point_in_poly(tracked_centroid, basket_poly)
-        else:
-            inside_basket = False
-
-        if inside_basket and tracked_centroid is not None:
-            last_inside_centroid = tracked_centroid
-
-        if not in_basket:
-            if inside_basket and zone_ok:
-                in_basket = True
-                entered_basket_frame = frame_idx
-        else:
-            # We were in basket; count a make when the tracked centroid exits the ROI downward.
-            if (
-                prev_inside_basket
-                and not inside_basket
-                and tracked_centroid is not None
-                and last_inside_centroid is not None
-            ):
-                dy = tracked_centroid[1] - last_inside_centroid[1]
-                downward_exit = (
-                    dy >= MIN_DOWNWARD_EXIT_PX
-                    and tracked_centroid[1] >= basket_y_mid
-                    and last_inside_centroid[1] >= basket_y_mid
-                )
-
-            if downward_exit:
-                t = frame_idx / fps
-                made_events.append((entered_basket_frame, t))
-                in_basket = False
-                entered_basket_frame = None
-                last_inside_centroid = None
-            # Fallback: if the ball disappears soon after entry, still count as make.
-            ball_missing = (frame_idx - last_seen_frame) > 2
-            timed_out = (frame_idx - entered_basket_frame) > MAX_MISSED_FRAMES_AFTER_ENTRY
-
-            if in_basket and ball_missing and not timed_out:
-                t = frame_idx / fps
-                made_events.append((entered_basket_frame, t))
-                in_basket = False
-                entered_basket_frame = None
-                last_inside_centroid = None
-            elif timed_out:
-                # Give up (likely bounce/false positive)
-                in_basket = False
-                entered_basket_frame = None
-                last_inside_centroid = None
+        # Drop very stale tracks to keep state compact.
+        stale_track_ids = [
+            tid for tid, tr in tracks.items()
+            if (frame_idx - tr["last_seen_frame"]) > TRACK_MAX_MISSED
+        ]
+        for tid in stale_track_ids:
+            del tracks[tid]
 
         # ----------------------------
         # Debug visualization
@@ -416,43 +481,74 @@ def main():
 
         # Draw all current contour candidates for debugging.
         if debug_overlays:
-            for idx, (area, cxy, bb) in enumerate(candidates):
+            for idx, cand in enumerate(candidates):
+                area = cand["area"]
+                cxy = cand["centroid"]
+                bb = cand["bbox"]
+                circ = cand["circularity"]
+                trackable = cand["trackable"]
                 x, y, ww, hh = bb
-                cv2.rectangle(vis, (x, y), (x + ww, y + hh), (0, 255, 0), 1)
-                cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, (0, 255, 0), -1)
+                color = (0, 255, 0) if trackable else (0, 180, 180)
+                cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, 1)
+                cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, color, -1)
                 cv2.putText(
                     vis,
-                    f"c{idx} a={int(area)}",
+                    f"c{idx} a={int(area)} cir={circ:.2f}",
                     (x, max(14, y - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
-                    (0, 255, 0),
+                    color,
                     1,
                     cv2.LINE_AA,
                 )
 
-        # Draw tracked ball
-        if last_centroid is not None and (frame_idx - last_seen_frame) <= 2:
-            cv2.circle(vis, (int(last_centroid[0]), int(last_centroid[1])), 8, (0, 0, 255), -1)
-            if bbox is not None:
-                x, y, ww, hh = bbox
-                cv2.rectangle(vis, (x, y), (x + ww, y + hh), (0, 0, 255), 2)
+        # Draw all tracked objects (red = preferred moving airborne tracks)
+        for tid, track in sorted(tracks.items()):
+            age = frame_idx - track["last_seen_frame"]
+            x, y, ww, hh = track["bbox"]
+            cxy = track["centroid"]
+
+            if age <= 1 and track["preferred"]:
+                color = (0, 0, 255)
+                thickness = 2
+            elif age <= 1:
+                color = (0, 165, 255)
+                thickness = 2
+            else:
+                color = (140, 140, 140)
+                thickness = 1
+
+            cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, thickness)
+            cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 5, color, -1)
+            label = f"T{tid} m={track['motion_ema']:.1f}"
+            if track["in_basket"]:
+                label += " IB"
+            if not track["zone_ok"]:
+                label += " Z0"
+            if track["preferred"]:
+                label += " P"
+            cv2.putText(
+                vis,
+                label,
+                (x, y + hh + 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
 
         if debug_overlays:
-            frames_since_seen = frame_idx - last_seen_frame
-            frames_since_zone = frame_idx - last_seen_in_zone_frame if use_zone else 0
+            visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
+            preferred_tracks = [tr for tr in visible_tracks if tr["preferred"]]
+            in_basket_ids = [tid for tid, tr in tracks.items() if tr["in_basket"]]
             debug_lines = [
-                f"Debug[d]: ON  candidates={len(candidates)}",
-                f"inside_basket={inside_basket} prev_inside={prev_inside_basket} in_basket={in_basket}",
-                f"zone_ok={zone_ok} use_zone={use_zone} frames_since_zone={frames_since_zone}",
-                f"frames_since_seen={frames_since_seen} downward_exit={downward_exit}",
-                f"ball_missing={ball_missing} timed_out={timed_out}",
+                f"Debug[d]: ON  candidates={len(candidates)} trackable={len(trackable_indices)}",
+                f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
+                f"in_basket_tracks={in_basket_ids[:6]} use_zone={use_zone}",
+                f"airborne_y_max={airborne_y_max} motion_px>={MIN_TRACK_MOTION_PX}",
+                f"last_event={last_event_text}",
             ]
-            if tracked_centroid is not None:
-                debug_lines.append(f"tracked=({tracked_centroid[0]:.1f}, {tracked_centroid[1]:.1f})")
-            if last_inside_centroid is not None:
-                debug_lines.append(f"last_inside=({last_inside_centroid[0]:.1f}, {last_inside_centroid[1]:.1f})")
-
             y0 = 90 if use_zone else 60
             for line in debug_lines:
                 cv2.putText(vis, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
@@ -508,7 +604,6 @@ def main():
         elif key == ord('d'):
             debug_overlays = not debug_overlays
 
-        prev_inside_basket = inside_basket
         frame_idx += 1
 
     cap.release()
@@ -518,8 +613,8 @@ def main():
     print(f"Total makes counted: {len(made_events)}")
     if made_events:
         print("Make timestamps (seconds):")
-        for fi, t in made_events:
-            print(f"  frame {fi:6d}  ->  {t:8.3f}s")
+        for fi, t, tid in made_events:
+            print(f"  track {tid:3d}  frame {fi:6d}  ->  {t:8.3f}s")
 
 
 if __name__ == "__main__":
