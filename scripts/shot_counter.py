@@ -23,7 +23,6 @@ Run:
 import sys
 import cv2
 import numpy as np
-from collections import deque
 
 # ----------------------------
 # Utility: polygon ROI drawing
@@ -177,15 +176,21 @@ def main():
     # "Made" event logic
     in_basket = False
     entered_basket_frame = None
+    prev_inside_basket = False
+    last_inside_centroid = None
 
     # Tunables (adjust as needed)
     MAX_MISSED_FRAMES_AFTER_ENTRY = int(0.30 * fps)  # if ball disappears soon after entry, count it
     MIN_CONTOUR_AREA = 80    # reject noise (increase if too many false detections)
     MAX_CONTOUR_AREA = 20_000  # reject giant blobs
     MAX_TRACK_DIST = 80      # px; tracker association radius
+    MIN_DOWNWARD_EXIT_PX = 4  # minimum downward motion between inside and outside centroid
+
+    basket_y_mid = (int(np.min(basket_poly[:, 1])) + int(np.max(basket_poly[:, 1]))) / 2.0
 
     made_events = []  # list of (frame_idx, seconds)
     frame_idx = 0
+    debug_overlays = True
 
     # Rewind to beginning (we consumed 1 frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -261,29 +266,59 @@ def main():
             zone_ok = (frame_idx - last_seen_in_zone_frame) <= int(1.0 * fps)
 
         # Basket entry / make logic
+        downward_exit = False
+        ball_missing = False
+        timed_out = False
+        tracked_centroid = None
         if last_centroid is not None and (frame_idx - last_seen_frame) <= 1:
-            inside_basket = point_in_poly((last_centroid[0], last_centroid[1]), basket_poly)
+            tracked_centroid = (last_centroid[0], last_centroid[1])
+            inside_basket = point_in_poly(tracked_centroid, basket_poly)
         else:
             inside_basket = False
+
+        if inside_basket and tracked_centroid is not None:
+            last_inside_centroid = tracked_centroid
 
         if not in_basket:
             if inside_basket and zone_ok:
                 in_basket = True
                 entered_basket_frame = frame_idx
         else:
-            # We were in basket; if the ball disappears soon after, count it as a make
-            ball_missing = (frame_idx - last_seen_frame) > 2
-            timed_out = (frame_idx - entered_basket_frame) > MAX_MISSED_FRAMES_AFTER_ENTRY
+            # We were in basket; count a make when the tracked centroid exits the ROI downward.
+            if (
+                prev_inside_basket
+                and not inside_basket
+                and tracked_centroid is not None
+                and last_inside_centroid is not None
+            ):
+                dy = tracked_centroid[1] - last_inside_centroid[1]
+                downward_exit = (
+                    dy >= MIN_DOWNWARD_EXIT_PX
+                    and tracked_centroid[1] >= basket_y_mid
+                    and last_inside_centroid[1] >= basket_y_mid
+                )
 
-            if ball_missing and not timed_out:
+            if downward_exit:
                 t = frame_idx / fps
                 made_events.append((entered_basket_frame, t))
                 in_basket = False
                 entered_basket_frame = None
+                last_inside_centroid = None
+            # Fallback: if the ball disappears soon after entry, still count as make.
+            ball_missing = (frame_idx - last_seen_frame) > 2
+            timed_out = (frame_idx - entered_basket_frame) > MAX_MISSED_FRAMES_AFTER_ENTRY
+
+            if in_basket and ball_missing and not timed_out:
+                t = frame_idx / fps
+                made_events.append((entered_basket_frame, t))
+                in_basket = False
+                entered_basket_frame = None
+                last_inside_centroid = None
             elif timed_out:
                 # Give up (likely bounce/false positive)
                 in_basket = False
                 entered_basket_frame = None
+                last_inside_centroid = None
 
         # ----------------------------
         # Debug visualization
@@ -299,12 +334,51 @@ def main():
             cv2.polylines(vis, [zone_poly], True, (255, 255, 0), 2)
             cv2.putText(vis, "9470 Zone ROI", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
 
+        # Draw all current contour candidates for debugging.
+        if debug_overlays:
+            for idx, (area, cxy, bb) in enumerate(candidates):
+                x, y, ww, hh = bb
+                cv2.rectangle(vis, (x, y), (x + ww, y + hh), (0, 255, 0), 1)
+                cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, (0, 255, 0), -1)
+                cv2.putText(
+                    vis,
+                    f"c{idx} a={int(area)}",
+                    (x, max(14, y - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
+
         # Draw tracked ball
         if last_centroid is not None and (frame_idx - last_seen_frame) <= 2:
             cv2.circle(vis, (int(last_centroid[0]), int(last_centroid[1])), 8, (0, 0, 255), -1)
             if bbox is not None:
                 x, y, ww, hh = bbox
                 cv2.rectangle(vis, (x, y), (x + ww, y + hh), (0, 0, 255), 2)
+
+        if debug_overlays:
+            frames_since_seen = frame_idx - last_seen_frame
+            frames_since_zone = frame_idx - last_seen_in_zone_frame if use_zone else 0
+            debug_lines = [
+                f"Debug[d]: ON  candidates={len(candidates)}",
+                f"inside_basket={inside_basket} prev_inside={prev_inside_basket} in_basket={in_basket}",
+                f"zone_ok={zone_ok} use_zone={use_zone} frames_since_zone={frames_since_zone}",
+                f"frames_since_seen={frames_since_seen} downward_exit={downward_exit}",
+                f"ball_missing={ball_missing} timed_out={timed_out}",
+            ]
+            if tracked_centroid is not None:
+                debug_lines.append(f"tracked=({tracked_centroid[0]:.1f}, {tracked_centroid[1]:.1f})")
+            if last_inside_centroid is not None:
+                debug_lines.append(f"last_inside=({last_inside_centroid[0]:.1f}, {last_inside_centroid[1]:.1f})")
+
+            y0 = 90 if use_zone else 60
+            for line in debug_lines:
+                cv2.putText(vis, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+                y0 += 18
+        else:
+            cv2.putText(vis, "Debug[d]: OFF", (10, 90 if use_zone else 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Overlay counts
         cv2.putText(vis, f"Makes: {len(made_events)}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
@@ -330,7 +404,10 @@ def main():
                     break
             if k2 == 27:
                 break
+        elif key == ord('d'):
+            debug_overlays = not debug_overlays
 
+        prev_inside_basket = inside_basket
         frame_idx += 1
 
     cap.release()
