@@ -406,6 +406,7 @@ def main():
     MAKE_DEBUG_PRINT = True
     EVENT_LOG_MAX = 12
     STRICT_ZONE_GATE = False  # if True, require zone_ok for basket entry when zone ROI is enabled
+    AUTO_PAUSE_ON_MAKE = False  # toggle with 'w'
 
     # Tracks are keyed by integer ID and updated with nearest-neighbor matching.
     tracks = {}
@@ -419,6 +420,7 @@ def main():
     debug_overlays = True
     last_event_text = "none"
     recent_events = []
+    auto_pause_pending = False
 
     def push_event(msg):
         nonlocal last_event_text
@@ -567,6 +569,8 @@ def main():
                     made_events.append((frame_idx, t, tid))
                     track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
                     track["made_highlight_until"] = frame_idx + int(1.0 * fps)
+                    if AUTO_PAUSE_ON_MAKE:
+                        auto_pause_pending = True
                     push_event(
                         f"[MAKEDBG] f{frame_idx} T{tid} MAKE (entry) "
                         f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
@@ -681,6 +685,7 @@ def main():
                 f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
                 f"airborne_y_max={airborne_y_max} motion_px>={MIN_TRACK_MOTION_PX}",
                 f"strict_zone_gate[z]={STRICT_ZONE_GATE}",
+                f"auto_pause_on_make[w]={AUTO_PAUSE_ON_MAKE}",
                 f"make_debug_print[m]={MAKE_DEBUG_PRINT}",
                 f"last_event={last_event_text}",
             ]
@@ -729,6 +734,16 @@ def main():
         )
         cv2.imshow(tuner_win, tuner_canvas)
 
+        if auto_pause_pending:
+            auto_pause_pending = False
+            push_event(f"[MAKEDBG] f{frame_idx} auto-paused on make; press 'p' to resume")
+            while True:
+                k2 = cv2.waitKey(0) & 0xFF
+                if k2 == ord('p') or k2 == 27:
+                    break
+            if k2 == 27:
+                break
+
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC
             break
@@ -748,6 +763,9 @@ def main():
         elif key == ord('z'):
             STRICT_ZONE_GATE = not STRICT_ZONE_GATE
             push_event(f"[MAKEDBG] f{frame_idx} strict zone gate {'ON' if STRICT_ZONE_GATE else 'OFF'}")
+        elif key == ord('w'):
+            AUTO_PAUSE_ON_MAKE = not AUTO_PAUSE_ON_MAKE
+            push_event(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if AUTO_PAUSE_ON_MAKE else 'OFF'}")
 
         frame_idx += 1
 
