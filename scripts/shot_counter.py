@@ -153,8 +153,9 @@ class PolyDrawer:
 # ----------------------------
 # HSV trackbar calibration
 # ----------------------------
-def make_hsv_tuner(win="HSV Tuner"):
+def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260)):
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(win, window_size[0], window_size[1])
 
     def nothing(x):
         pass
@@ -239,7 +240,9 @@ def main():
     use_zone = zone_poly.size != 0
 
     # HSV tuner
-    tuner_win = make_hsv_tuner()
+    hsv_win_w = min(1200, max(900, int(screen_w * 0.6)))
+    hsv_win_h = max(220, int(screen_h * 0.25))
+    tuner_win = make_hsv_tuner(window_size=(hsv_win_w, hsv_win_h))
     main_win = "Shot Counter (Left=Video, Right=Mask)"
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
@@ -466,7 +469,30 @@ def main():
         combo = resize_to_fit(combo, screen_w, screen_h)
 
         cv2.imshow(main_win, combo)
-        cv2.imshow(tuner_win, np.zeros((1, 600, 3), dtype=np.uint8))  # just to keep trackbars visible
+
+        # Keep trackbars visible on a larger canvas and show current HSV bounds.
+        tuner_canvas = np.zeros((hsv_win_h, hsv_win_w, 3), dtype=np.uint8)
+        cv2.putText(
+            tuner_canvas,
+            f"Lower HSV: ({int(lower[0])}, {int(lower[1])}, {int(lower[2])})",
+            (20, max(24, hsv_win_h - 56)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (220, 220, 220),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            tuner_canvas,
+            f"Upper HSV: ({int(upper[0])}, {int(upper[1])}, {int(upper[2])})",
+            (20, max(24, hsv_win_h - 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (220, 220, 220),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.imshow(tuner_win, tuner_canvas)
 
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC
