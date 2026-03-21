@@ -228,7 +228,7 @@ def update_track_state(track, frame_idx, basket_poly, zone_poly, use_zone, confi
 def handle_make_detection(track, frame_idx, fps, entering_basket, use_zone,
                           zone_ok, recently_moving, airborne, config, made_events,
                           push_event_fn):
-    """Check if ball made and record if so; returns True if should auto-pause."""
+    """Check if ball made and record if so; returns True if make detected."""
     if frame_idx >= track["cooldown_until"] and entering_basket:
         entry_zone_ok = (not use_zone) or (not config["STRICT_ZONE_GATE"]) or zone_ok
         entry_ok = entry_zone_ok and (recently_moving or airborne)
@@ -240,7 +240,7 @@ def handle_make_detection(track, frame_idx, fps, entering_basket, use_zone,
                 f"[MAKEDBG] f{frame_idx} T{track['id']} MAKE (entry) "
                 f"(zone_ok={zone_ok}, strict_zone={config['STRICT_ZONE_GATE']}, moving={recently_moving}, airborne={airborne})"
             )
-            return config["AUTO_PAUSE_ON_MAKE"]
+            return True
         else:
             push_event_fn(
                 f"[MAKEDBG] f{frame_idx} T{track['id']} REJECT enter "
@@ -331,7 +331,7 @@ def draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, config):
 
 
 def draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, config, h,
-                    last_event_text, recent_events):
+                    last_event_text, recent_events, made_events):
     """Draw debug information on visualization."""
     if config["DEBUG_OVERLAYS"]:
         visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
@@ -359,7 +359,7 @@ def draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, config, h,
     else:
         cv2.putText(vis, "Debug[d]: OFF", (10, 90 if use_zone else 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
-    cv2.putText(vis, f"Makes: {len([e for e in recent_events if 'MAKE' in e])}", (10, h - 20),
+    cv2.putText(vis, f"Makes: {len(made_events)}", (10, h - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
 
 
@@ -733,24 +733,21 @@ def main():
     main_win = "Shot Counter (Left=Video, Right=Mask)"
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
-    main_x = max(0, (screen_w - screen_w) // 2)  # 0 for full-width windows
-    main_y = max(0, (screen_h - screen_h) // 2)  # 0 for full-height windows
-    cv2.moveWindow(main_win, main_x, main_y)
+    center_window(main_win, hsv_win_w, screen_h, screen_w, screen_h)
 
-    # TODO: Properly integrate into code
-    MOTION_MEMORY_FRAMES = int(0.50 * fps)
-    TRACK_COOLDOWN_FRAMES = int(0.40 * fps)
+    # Pre-compute frame-dependent config values
+    CONFIG["MOTION_MEMORY_FRAMES"] = int(CONFIG["MOTION_MEMORY_FRAMES_FACTOR"] * fps)
+    CONFIG["TRACK_COOLDOWN_FRAMES"] = int(CONFIG["TRACK_COOLDOWN_FRAMES_FACTOR"] * fps)
 
     # Tracks are keyed by integer ID and updated with nearest-neighbor matching.
     tracks = {}
     next_track_id = 1
 
-    zone_window_frames = int(1.0 * fps)
-    airborne_y_max = int(0.86 * h)
+    zone_window_frames = int(CONFIG["ZONE_WINDOW_FRAMES_FACTOR"] * fps)
+    airborne_y_max = int(CONFIG["AIRBORNE_Y_MAX_FACTOR"] * h)
 
     made_events = []  # list of (frame_idx, seconds, track_id)
     frame_idx = 0
-    debug_overlays = True
     last_event_text = "none"
     recent_events = []
     auto_pause_pending = False
@@ -788,6 +785,11 @@ def main():
             tracks, candidates, CONFIG, frame_idx
         )
 
+        # Handle zone updates for matched tracks
+        for tid in assigned_tracks:
+            if use_zone and point_in_poly(tracks[tid]["centroid"], zone_poly):
+                tracks[tid]["last_seen_in_zone_frame"] = frame_idx
+
         next_track_id = spawn_new_tracks(
             candidates, assigned_candidates, trackable_indices, use_zone,
             zone_poly, frame_idx, next_track_id, tracks
@@ -796,43 +798,18 @@ def main():
         # Per-track make logic: count a make immediately on ROI entry.
         made_track_id_this_frame = None
         for tid, track in tracks.items():
-            visible = (frame_idx - track["last_seen_frame"]) <= 1
-            zone_ok = True
-            if use_zone:
-                zone_ok = (frame_idx - track["last_seen_in_zone_frame"]) <= zone_window_frames
-            just_spawned = (frame_idx - track["first_seen_frame"]) <= 2
-            recently_moving = ((frame_idx - track["last_motion_frame"]) <= MOTION_MEMORY_FRAMES) or just_spawned
-            airborne = track["centroid"][1] <= airborne_y_max
-
-            inside_basket = visible and point_in_poly(track["centroid"], basket_poly)
-            entering_basket = inside_basket and not track["prev_inside_basket"]
-            if frame_idx >= track["cooldown_until"] and entering_basket:
-                entry_zone_ok = (not use_zone) or (not CONFIG["STRICT_ZONE_GATE"]) or zone_ok
-                entry_ok = entry_zone_ok and (recently_moving or airborne)
-                if entry_ok:
-                    t = frame_idx / fps
-                    made_events.append((frame_idx, t, tid))
-                    track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
-                    made_track_id_this_frame = tid
-                    if CONFIG["AUTO_PAUSE_ON_MAKE"]:
-                        auto_pause_pending = True
-                    push_event(
-                        f"[MAKEDBG] f{frame_idx} T{tid} MAKE (entry) "
-                        f"(zone_ok={zone_ok}, strict_zone={CONFIG["STRICT_ZONE_GATE"]}, moving={recently_moving}, airborne={airborne})"
-                    )
-                else:
-                    push_event(
-                        f"[MAKEDBG] f{frame_idx} T{tid} REJECT enter "
-                        f"(zone_ok={zone_ok}, strict_zone={CONFIG["STRICT_ZONE_GATE"]}, moving={recently_moving}, airborne={airborne})"
-                    )
-
-            track["visible"] = visible
-            track["inside_basket"] = inside_basket
-            track["zone_ok"] = zone_ok
-            track["recently_moving"] = recently_moving
-            track["airborne"] = airborne
-            track["preferred"] = visible and recently_moving and airborne
-            track["prev_inside_basket"] = inside_basket
+            entering_basket, zone_ok, recently_moving, airborne = update_track_state(
+                track, frame_idx, basket_poly, zone_poly, use_zone, CONFIG,
+                zone_window_frames, airborne_y_max
+            )
+            is_make = handle_make_detection(
+                track, frame_idx, fps, entering_basket, use_zone, zone_ok,
+                recently_moving, airborne, CONFIG, made_events, push_event
+            )
+            if is_make:
+                made_track_id_this_frame = tid
+                if CONFIG["AUTO_PAUSE_ON_MAKE"]:
+                    auto_pause_pending = True
 
         # Drop very stale tracks to keep state compact.
         stale_track_ids = [
@@ -843,110 +820,14 @@ def main():
             del tracks[tid]
 
         # ----------------------------
-        # Debug visualization
+        # Visualization
         # ----------------------------
         vis = frame.copy()
-
-        # Draw basket poly
-        cv2.polylines(vis, [basket_poly], True, (0, 255, 255), 2)
-        cv2.putText(vis, "Basket ROI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
-
-        # Draw optional zone
-        if use_zone:
-            cv2.polylines(vis, [zone_poly], True, (255, 255, 0), 2)
-            cv2.putText(vis, "9470 Zone ROI", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
-
-        # Draw all current contour candidates for debugging.
-        if debug_overlays:
-            for idx, cand in enumerate(candidates):
-                area = cand["area"]
-                cxy = cand["centroid"]
-                bb = cand["bbox"]
-                circ = cand["circularity"]
-                trackable = cand["trackable"]
-                x, y, ww, hh = bb
-                color = (0, 255, 0) if trackable else (0, 180, 180)
-                cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, 1)
-                cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, color, -1)
-                cv2.putText(
-                    vis,
-                    f"c{idx} a={int(area)} cir={circ:.2f}",
-                    (x, max(14, y - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    color,
-                    1,
-                    cv2.LINE_AA,
-                )
-
-        # Draw all tracked objects (red = preferred moving airborne tracks)
-        for tid, track in sorted(tracks.items()):
-            age = frame_idx - track["last_seen_frame"]
-            x, y, ww, hh = track["bbox"]
-            cxy = track["centroid"]
-
-            if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
-                color = (255, 0, 0)  # blue: counted as make recently
-                thickness = 3
-            elif age <= 1 and track["preferred"]:
-                color = (0, 0, 255)
-                thickness = 2
-            elif age <= 1:
-                color = (0, 165, 255)
-                thickness = 2
-            else:
-                color = (140, 140, 140)
-                thickness = 1
-
-            cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, thickness)
-            cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 5, color, -1)
-            label = f"T{tid} m={track['motion_ema']:.1f}"
-            if track["inside_basket"]:
-                label += " IN"
-            if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
-                label += " MADE"
-            if CONFIG["STRICT_ZONE_GATE"] and not track["zone_ok"]:
-                label += " Z0"
-            if track["preferred"]:
-                label += " P"
-            cv2.putText(
-                vis,
-                label,
-                (x, y + hh + 14),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
-
-        if debug_overlays:
-            visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
-            preferred_tracks = [tr for tr in visible_tracks if tr["preferred"]]
-            inside_ids = [tid for tid, tr in tracks.items() if tr["inside_basket"]]
-            debug_lines = [
-                f"Debug[d]: ON  candidates={len(candidates)} trackable={len(trackable_indices)}",
-                f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
-                f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
-                f"airborne_y_max={airborne_y_max} motion_px>={CONFIG["MIN_TRACK_MOTION_PX"]}",
-                f"strict_zone_gate[z]={CONFIG["STRICT_ZONE_GATE"]}",
-                f"auto_pause_on_make[w]={CONFIG["AUTO_PAUSE_ON_MAKE"]}",
-                f"make_debug_print[m]={CONFIG["MAKE_DEBUG_PRINT"]}",
-                f"last_event={last_event_text}",
-            ]
-            y0 = 90 if use_zone else 60
-            for line in debug_lines:
-                cv2.putText(vis, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
-                y0 += 18
-            event_lines = recent_events[-4:]
-            for ev in event_lines:
-                cv2.putText(vis, ev[:140], (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 255, 180), 1, cv2.LINE_AA)
-                y0 += 16
-        else:
-            cv2.putText(vis, "Debug[d]: OFF", (10, 90 if use_zone else 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-
-        # Overlay counts
-        cv2.putText(vis, f"Makes: {len(made_events)}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+        draw_rois(vis, basket_poly, zone_poly, use_zone)
+        draw_candidates(vis, candidates, CONFIG["DEBUG_OVERLAYS"])
+        draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, CONFIG)
+        draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, CONFIG, h,
+                        last_event_text, recent_events, made_events)
 
         # Show side-by-side mask for tuning
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -990,27 +871,16 @@ def main():
                 break
 
         key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC
+        key_action = handle_keyboard_input(key, CONFIG, frame_idx, push_event)
+        if key_action == "exit":
             break
-        elif key == ord('p'):
-            # pause
+        elif key_action == "pause":
             while True:
                 k2 = cv2.waitKey(0) & 0xFF
                 if k2 == ord('p') or k2 == 27:
                     break
             if k2 == 27:
                 break
-        elif key == ord('d'):
-            debug_overlays = not debug_overlays
-        elif key == ord('m'):
-            CONFIG["MAKE_DEBUG_PRINT"] = not CONFIG["MAKE_DEBUG_PRINT"]
-            push_event(f"[MAKEDBG] f{frame_idx} console logging {'ON' if CONFIG["MAKE_DEBUG_PRINT"] else 'OFF'}")
-        elif key == ord('z'):
-            CONFIG["STRICT_ZONE_GATE"] = not CONFIG["STRICT_ZONE_GATE"]
-            push_event(f"[MAKEDBG] f{frame_idx} strict zone gate {'ON' if CONFIG["STRICT_ZONE_GATE"] else 'OFF'}")
-        elif key == ord('w'):
-            CONFIG["AUTO_PAUSE_ON_MAKE"] = not CONFIG["AUTO_PAUSE_ON_MAKE"]
-            push_event(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if CONFIG["AUTO_PAUSE_ON_MAKE"] else 'OFF'}")
 
         frame_idx += 1
 

@@ -1,5 +1,6 @@
 # Project-specific folders
 assets/
+.vscode/
 
 # Python-specific
 __pycache__
