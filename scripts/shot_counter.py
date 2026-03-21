@@ -58,6 +58,16 @@ CONFIG = {
     "ZONE_WINDOW_FRAMES_FACTOR": 1.0,
     "AIRBORNE_Y_MAX_FACTOR": 0.86,
     "DEBUG_OVERLAYS": True,
+
+    # HSV values
+    # OLD HSV (practice field) -- H (5, 25); S (120, 255); V (120, 255)
+    # NEW HSV (official videos) -- H (20, 32); S (150, 255); V (150, 255)
+    "H_MIN": 20,
+    "H_MAX": 32,
+    "S_MIN": 150,
+    "S_MAX": 255,
+    "V_MIN": 150,
+    "V_MAX": 255,
 }
 
 def resize_to_fit(image, max_w, max_h):
@@ -501,12 +511,12 @@ def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260), screen_dims=None):
     # Reasonable defaults for "orange ball" — tune as needed
     # OLD HSV -- H (5, 25); S (120, 255); V (120, 255)
     # NEW HSV -- H (20, 32); S (150, 255); V (150, 255)
-    cv2.createTrackbar("H min", win, 5, 179, nothing)
-    cv2.createTrackbar("H max", win, 25, 179, nothing)
-    cv2.createTrackbar("S min", win, 120, 255, nothing)
-    cv2.createTrackbar("S max", win, 255, 255, nothing)
-    cv2.createTrackbar("V min", win, 120, 255, nothing)
-    cv2.createTrackbar("V max", win, 255, 255, nothing)
+    cv2.createTrackbar("H min", win, CONFIG["H_MIN"], 179, nothing)
+    cv2.createTrackbar("H max", win, CONFIG["H_MAX"], 179, nothing)
+    cv2.createTrackbar("S min", win, CONFIG["S_MIN"], 255, nothing)
+    cv2.createTrackbar("S max", win, CONFIG["S_MAX"], 255, nothing)
+    cv2.createTrackbar("V min", win, CONFIG["V_MIN"], 255, nothing)
+    cv2.createTrackbar("V max", win, CONFIG["V_MAX"], 255, nothing)
 
     return win
 
@@ -612,7 +622,7 @@ def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
 # ----------------------------
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python shot_counter.py /path/to/video")
+        print("Usage: python scripts/shot_counter.py /path/to/video")
         sys.exit(1)
 
     video_path = sys.argv[1]
@@ -733,7 +743,7 @@ def main():
     main_win = "Shot Counter (Left=Video, Right=Mask)"
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
-    center_window(main_win, hsv_win_w, screen_h, screen_w, screen_h)
+    center_window(main_win, hsv_win_w, hsv_win_h, screen_w, screen_h)
 
     # Pre-compute frame-dependent config values
     CONFIG["MOTION_MEMORY_FRAMES"] = int(CONFIG["MOTION_MEMORY_FRAMES_FACTOR"] * fps)
