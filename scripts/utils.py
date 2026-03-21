@@ -16,3 +16,4 @@ def get_screen_size():
     except Exception as e:
         print(f"[screen_utils.py] Hit exception when fetching screen size: {e}")
         # Defaults to 1080p
+        return 1920, 1080

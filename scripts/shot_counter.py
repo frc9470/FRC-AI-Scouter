@@ -91,6 +91,14 @@ class PolyDrawer:
 
         cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.win, target_w, target_h)
+        screen_w_approx, screen_h_approx = 1920, 1080  # fallback; get_screen_size() called in main
+        try:
+            screen_w_approx, screen_h_approx = get_screen_size()
+        except:
+            pass
+        x = max(0, (screen_w_approx - target_w) // 2)
+        y = max(0, (screen_h_approx - target_h) // 2)
+        cv2.moveWindow(self.win, x, y)
         cv2.setMouseCallback(self.win, self._mouse)
 
         while True:
@@ -141,9 +149,13 @@ class PolyDrawer:
 # ----------------------------
 # HSV trackbar calibration
 # ----------------------------
-def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260)):
+def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260), screen_dims=None):
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win, window_size[0], window_size[1])
+    if screen_dims:
+        x = max(0, (screen_dims[0] - window_size[0]) // 2)
+        y = max(0, (screen_dims[1] - window_size[1]) // 2)
+        cv2.moveWindow(win, x, y)
 
     def nothing(x):
         pass
@@ -226,6 +238,13 @@ def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
 
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, target_w, target_h)
+    try:
+        screen_w_full, screen_h_full = get_screen_size()
+        x = max(0, (screen_w_full - target_w) // 2)
+        y = max(0, (screen_h_full - target_h) // 2)
+        cv2.moveWindow(win_name, x, y)
+    except:
+        pass
 
     disp_pts = np.array(
         [[int(round(px * scale + pad_x)), int(round(py * scale + pad_y))] for px, py in poly],
@@ -375,10 +394,13 @@ def main():
     # HSV tuner
     hsv_win_w = min(1200, max(900, int(screen_w * 0.6)))
     hsv_win_h = max(220, int(screen_h * 0.25))
-    tuner_win = make_hsv_tuner(window_size=(hsv_win_w, hsv_win_h))
+    tuner_win = make_hsv_tuner(window_size=(hsv_win_w, hsv_win_h), screen_dims=(screen_w, screen_h))
     main_win = "Shot Counter (Left=Video, Right=Mask)"
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
+    main_x = max(0, (screen_w - screen_w) // 2)  # 0 for full-width windows
+    main_y = max(0, (screen_h - screen_h) // 2)  # 0 for full-height windows
+    cv2.moveWindow(main_win, main_x, main_y)
 
     # Tunables (adjust as needed)
     MIN_CONTOUR_AREA = 80    # reject noise (increase if too many false detections)
