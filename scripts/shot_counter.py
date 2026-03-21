@@ -20,28 +20,14 @@ Run:
   python shot_counter.py /path/to/video.mov
 """
 
-import sys
-import os
 import json
+import os
+import sys
+
 import cv2
 import numpy as np
 
-
-def get_screen_size():
-    try:
-        import tkinter as tk
-
-        root = tk.Tk()
-        root.withdraw()
-        w = int(root.winfo_screenwidth())
-        h = int(root.winfo_screenheight())
-        root.destroy()
-        return w, h
-    except Exception:
-        print("Hit exception when fetching screen size")
-        # Some random values to at least make it show larger.
-        return 3072, 1920
-
+from utils import get_screen_size
 
 def resize_to_fit(image, max_w, max_h):
     h, w = image.shape[:2]

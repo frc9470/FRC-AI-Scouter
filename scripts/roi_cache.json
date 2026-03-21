@@ -72,5 +72,30 @@
       ]
     ],
     "zone_poly": []
+  },
+  "mar-19-2026-rembrandts-website.webm": {
+    "frame_size": [
+      1080,
+      1920
+    ],
+    "basket_poly": [
+      [
+        771,
+        307
+      ],
+      [
+        437,
+        617
+      ],
+      [
+        905,
+        591
+      ],
+      [
+        770,
+        307
+      ]
+    ],
+    "zone_poly": []
   }
 }

@@ -1,1 +1,8 @@
+# Project-specific folders
 assets/
+
+# Python-specific
+__pycache__
+
+# Platform-specific files (Mac)
+.DS_Store
