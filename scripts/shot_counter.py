@@ -149,11 +149,12 @@ def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260)):
         pass
 
     # Reasonable defaults for "orange ball" — tune as needed
-    cv2.createTrackbar("H min", win, 5, 179, nothing)
-    cv2.createTrackbar("H max", win, 25, 179, nothing)
-    cv2.createTrackbar("S min", win, 120, 255, nothing)
+    # OLD HSV -- H (5, 25); S (120, 255); V (120, 255)
+    cv2.createTrackbar("H min", win, 20, 179, nothing)
+    cv2.createTrackbar("H max", win, 32, 179, nothing)
+    cv2.createTrackbar("S min", win, 150, 255, nothing)
     cv2.createTrackbar("S max", win, 255, 255, nothing)
-    cv2.createTrackbar("V min", win, 120, 255, nothing)
+    cv2.createTrackbar("V min", win, 150, 255, nothing)
     cv2.createTrackbar("V max", win, 255, 255, nothing)
 
     return win
