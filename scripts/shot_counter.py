@@ -2,22 +2,26 @@
 Semi-automatic shot counter for a robotics match video.
 
 What it does:
-- Lets you draw the basket opening as a polygon ROI (mouse clicks).
-- Lets you tune an HSV color range for the ball (trackbars).
-- Tracks ball centroids via simple color segmentation + contour filtering.
-- Counts a "made" when a ball centroid enters the basket ROI and then disappears
+- Lets you outline the HUB opening as a polygon ROI (via left mouse clicks).
+- Lets you tune an HSV color range for the FUEL (via trackbars).
+- Tracks FUEL centroids via simple color segmentation + contour filtering.
+- Counts a successful shot when a FUEL centroid enters the HUB ROI and then disappears
   (or exits downward) within a short time window.
 
 Notes:
-- This does NOT automatically identify robot 9470. To filter only 9470's shots,
+- This does NOT automatically identify team 9470's robot. To filter only 9470's shots,
   you can optionally define an additional "robot shooting zone" ROI near where 9470
-  stands and only count makes when a ball originated from that zone. (Included.)
-- Works best when balls have a distinct color (often orange) and the basket is stationary.
+  stands and only count makes when a FUEL originated from that zone.
+- Works best when FUEL have a distinct color (tune to yellow)
+  and the HUB is stationary (this means the camera POV should be stationary).
 
-Dependencies:
-  pip install opencv-python numpy
+Installation:
+- `pip install opencv-python numpy yt-dlp`, OR
+- set up a conda environment using `environment.yml`
 Run:
-  python shot_counter.py /path/to/video.mov
+- `cd` into the project directory
+- `./.venv/bin/activate` OR `conda activate <env>` (based on setup used above)
+- `python src/shot_counter.py assets/<path/to/video.mov>`
 """
 
 import json
@@ -29,6 +33,33 @@ import numpy as np
 
 from utils import get_screen_size
 
+# ============================
+# Configuration Variables (adjust as needed)
+# ============================
+CONFIG = {
+    # Reject noise (increase if too many false detections)
+    "MIN_CONTOUR_AREA": 80,
+    # Reject giant blobs
+    "MAX_CONTOUR_AREA": 20_000,
+    # Prefer smaller blobs over giant fuel piles
+    "MAX_TRACKABLE_AREA": 8_000,
+    "MIN_TRACKABLE_CIRCULARITY": 0.20,
+    "MAX_TRACK_DIST": 90, # in px; association radius
+    "TRACK_MAX_MISSED": 8,
+    "MIN_TRACK_MOTION_PX": 2.5,
+    "MOTION_MEMORY_FRAMES_FACTOR": 0.50,
+    "TRACK_COOLDOWN_FRAMES_FACTOR": 0.40,
+    "EVENT_LOG_MAX": 12,
+    # If True, require `zone_ok` for basket entry when zone ROI is enabled
+    "STRICT_ZONE_GATE": False,
+    # Toggle with 'w' -- pauses after every successful shot detected
+    "AUTO_PAUSE_ON_MAKE": False,
+    "MAKE_DEBUG_PRINT": True,
+    "ZONE_WINDOW_FRAMES_FACTOR": 1.0,
+    "AIRBORNE_Y_MAX_FACTOR": 0.86,
+    "DEBUG_OVERLAYS": True,
+}
+
 def resize_to_fit(image, max_w, max_h):
     h, w = image.shape[:2]
     if w <= 0 or h <= 0:
@@ -37,6 +68,319 @@ def resize_to_fit(image, max_w, max_h):
     out_w = max(1, int(round(w * scale)))
     out_h = max(1, int(round(h * scale)))
     return cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+
+
+# ============================
+# Helper: Window Management
+# ============================
+def center_window(win_name, window_w, window_h, screen_w, screen_h):
+    """Center an OpenCV window on the screen."""
+    x = max(0, (screen_w - window_w) // 2)
+    y = max(0, (screen_h - window_h) // 2)
+    cv2.moveWindow(win_name, x, y)
+
+
+# ============================
+# Helpers: Image Processing
+# ============================
+def process_mask(mask):
+    """Apply morphological operations to clean the binary mask."""
+    mask = cv2.medianBlur(mask, 5)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+    return mask
+
+
+def extract_candidates_from_contours(contours, config):
+    """Extract ball candidate objects from contours based on shape/area criteria."""
+    candidates = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < config["MIN_CONTOUR_AREA"] or area > config["MAX_CONTOUR_AREA"]:
+            continue
+        (x, y, ww, hh) = cv2.boundingRect(c)
+        cx = x + ww / 2.0
+        cy = y + hh / 2.0
+        perimeter = cv2.arcLength(c, True)
+        circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 1e-6 else 0.0
+        aspect = (ww / float(hh)) if hh > 0 else 0.0
+        trackable = (
+            area <= config["MAX_TRACKABLE_AREA"]
+            and circularity >= config["MIN_TRACKABLE_CIRCULARITY"]
+            and 0.45 <= aspect <= 2.2
+        )
+        candidates.append({
+            "area": area,
+            "centroid": (cx, cy),
+            "bbox": (x, y, ww, hh),
+            "circularity": circularity,
+            "trackable": trackable,
+        })
+    return candidates
+
+
+# ============================
+# Helpers: Object Tracking
+# ============================
+def match_tracks_to_candidates(tracks, candidates, config, frame_idx):
+    """Associate existing tracks with detected candidates using nearest-neighbor matching."""
+    active_track_ids = [
+        tid for tid, tr in tracks.items()
+        if (frame_idx - tr["last_seen_frame"]) <= config["TRACK_MAX_MISSED"]
+    ]
+    trackable_indices = [i for i, cand in enumerate(candidates) if cand["trackable"]]
+
+    pairs = []
+    for tid in active_track_ids:
+        tx, ty = tracks[tid]["centroid"]
+        for ci in trackable_indices:
+            cx, cy = candidates[ci]["centroid"]
+            d = float(np.hypot(cx - tx, cy - ty))
+            if d <= config["MAX_TRACK_DIST"]:
+                pairs.append((d, tid, ci))
+
+    pairs.sort(key=lambda t: t[0])
+
+    assigned_tracks = set()
+    assigned_candidates = set()
+    for _, tid, ci in pairs:
+        if tid in assigned_tracks or ci in assigned_candidates:
+            continue
+        track = tracks[tid]
+        cand = candidates[ci]
+        prev_centroid = track["centroid"]
+        new_centroid = cand["centroid"]
+        motion = float(np.hypot(new_centroid[0] - prev_centroid[0], new_centroid[1] - prev_centroid[1]))
+
+        track["centroid"] = new_centroid
+        track["bbox"] = cand["bbox"]
+        track["area"] = cand["area"]
+        track["last_seen_frame"] = frame_idx
+        track["motion_ema"] = 0.65 * track["motion_ema"] + 0.35 * motion
+        if motion >= config["MIN_TRACK_MOTION_PX"]:
+            track["last_motion_frame"] = frame_idx
+
+        assigned_tracks.add(tid)
+        assigned_candidates.add(ci)
+
+    return assigned_tracks, assigned_candidates, trackable_indices
+
+
+def spawn_new_tracks(candidates, assigned_candidates, trackable_indices, use_zone, zone_poly,
+                     frame_idx, next_track_id, tracks):
+    """Create new tracks for unmatched candidates."""
+    for ci in trackable_indices:
+        if ci in assigned_candidates:
+            continue
+        cand = candidates[ci]
+        zone_seen_frame = -10_000
+        if use_zone and point_in_poly(cand["centroid"], zone_poly):
+            zone_seen_frame = frame_idx
+        tracks[next_track_id] = {
+            "id": next_track_id,
+            "centroid": cand["centroid"],
+            "bbox": cand["bbox"],
+            "area": cand["area"],
+            "first_seen_frame": frame_idx,
+            "last_seen_frame": frame_idx,
+            "last_seen_in_zone_frame": zone_seen_frame,
+            "motion_ema": 0.0,
+            "last_motion_frame": -10_000,
+            "inside_basket": False,
+            "prev_inside_basket": False,
+            "cooldown_until": -1,
+            "visible": True,
+            "preferred": False,
+            "zone_ok": True,
+            "recently_moving": False,
+            "airborne": False,
+        }
+        next_track_id += 1
+    return next_track_id
+
+
+def update_track_state(track, frame_idx, basket_poly, zone_poly, use_zone, config,
+                       zone_window_frames, airborne_y_max):
+    """Calculate and update track state properties for current frame."""
+    visible = (frame_idx - track["last_seen_frame"]) <= 1
+    zone_ok = True
+    if use_zone:
+        zone_ok = (frame_idx - track["last_seen_in_zone_frame"]) <= zone_window_frames
+    just_spawned = (frame_idx - track["first_seen_frame"]) <= 2
+    recently_moving = ((frame_idx - track["last_motion_frame"]) <= config["MOTION_MEMORY_FRAMES"]) or just_spawned
+    airborne = track["centroid"][1] <= airborne_y_max
+
+    inside_basket = visible and point_in_poly(track["centroid"], basket_poly)
+    entering_basket = inside_basket and not track["prev_inside_basket"]
+
+    track["visible"] = visible
+    track["inside_basket"] = inside_basket
+    track["zone_ok"] = zone_ok
+    track["recently_moving"] = recently_moving
+    track["airborne"] = airborne
+    track["preferred"] = visible and recently_moving and airborne
+    track["prev_inside_basket"] = inside_basket
+
+    return entering_basket, zone_ok, recently_moving, airborne
+
+
+def handle_make_detection(track, frame_idx, fps, entering_basket, use_zone,
+                          zone_ok, recently_moving, airborne, config, made_events,
+                          push_event_fn):
+    """Check if ball made and record if so; returns True if should auto-pause."""
+    if frame_idx >= track["cooldown_until"] and entering_basket:
+        entry_zone_ok = (not use_zone) or (not config["STRICT_ZONE_GATE"]) or zone_ok
+        entry_ok = entry_zone_ok and (recently_moving or airborne)
+        if entry_ok:
+            t = frame_idx / fps
+            made_events.append((frame_idx, t, track["id"]))
+            track["cooldown_until"] = frame_idx + int(config["TRACK_COOLDOWN_FRAMES_FACTOR"] * fps)
+            push_event_fn(
+                f"[MAKEDBG] f{frame_idx} T{track['id']} MAKE (entry) "
+                f"(zone_ok={zone_ok}, strict_zone={config['STRICT_ZONE_GATE']}, moving={recently_moving}, airborne={airborne})"
+            )
+            return config["AUTO_PAUSE_ON_MAKE"]
+        else:
+            push_event_fn(
+                f"[MAKEDBG] f{frame_idx} T{track['id']} REJECT enter "
+                f"(zone_ok={zone_ok}, strict_zone={config['STRICT_ZONE_GATE']}, moving={recently_moving}, airborne={airborne})"
+            )
+    return False
+
+
+# ============================
+# Helpers: Visualization
+# ============================
+def draw_rois(vis, basket_poly, zone_poly, use_zone):
+    """Draw basket and zone ROIs on visualization."""
+    cv2.polylines(vis, [basket_poly], True, (0, 255, 255), 2)
+    cv2.putText(vis, "Basket ROI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+    if use_zone:
+        cv2.polylines(vis, [zone_poly], True, (255, 255, 0), 2)
+        cv2.putText(vis, "9470 Zone ROI", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
+
+
+def draw_candidates(vis, candidates, debug_overlays):
+    """Draw candidate contours on visualization."""
+    if not debug_overlays:
+        return
+    for idx, cand in enumerate(candidates):
+        area = cand["area"]
+        cxy = cand["centroid"]
+        bb = cand["bbox"]
+        circ = cand["circularity"]
+        trackable = cand["trackable"]
+        x, y, ww, hh = bb
+        color = (0, 255, 0) if trackable else (0, 180, 180)
+        cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, 1)
+        cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, color, -1)
+        cv2.putText(
+            vis,
+            f"c{idx} a={int(area)} cir={circ:.2f}",
+            (x, max(14, y - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, config):
+    """Draw tracked objects on visualization."""
+    for tid, track in sorted(tracks.items()):
+        age = frame_idx - track["last_seen_frame"]
+        x, y, ww, hh = track["bbox"]
+        cxy = track["centroid"]
+
+        if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
+            color = (255, 0, 0)
+            thickness = 3
+        elif age <= 1 and track["preferred"]:
+            color = (0, 0, 255)
+            thickness = 2
+        elif age <= 1:
+            color = (0, 165, 255)
+            thickness = 2
+        else:
+            color = (140, 140, 140)
+            thickness = 1
+
+        cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, thickness)
+        cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 5, color, -1)
+        label = f"T{tid} m={track['motion_ema']:.1f}"
+        if track["inside_basket"]:
+            label += " IN"
+        if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
+            label += " MADE"
+        if config["STRICT_ZONE_GATE"] and not track["zone_ok"]:
+            label += " Z0"
+        if track["preferred"]:
+            label += " P"
+        cv2.putText(
+            vis,
+            label,
+            (x, y + hh + 14),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, config, h,
+                    last_event_text, recent_events):
+    """Draw debug information on visualization."""
+    if config["DEBUG_OVERLAYS"]:
+        visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
+        preferred_tracks = [tr for tr in visible_tracks if tr["preferred"]]
+        inside_ids = [tid for tid, tr in tracks.items() if tr["inside_basket"]]
+        trackable_count = sum(1 for c in candidates if c["trackable"])
+        debug_lines = [
+            f"Debug[d]: ON  candidates={len(candidates)} trackable={trackable_count}",
+            f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
+            f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
+            f"motion_px>={config['MIN_TRACK_MOTION_PX']:.1f}",
+            f"strict_zone_gate[z]={config['STRICT_ZONE_GATE']}",
+            f"auto_pause_on_make[w]={config['AUTO_PAUSE_ON_MAKE']}",
+            f"make_debug_print[m]={config['MAKE_DEBUG_PRINT']}",
+            f"last_event={last_event_text}",
+        ]
+        y0 = 90 if use_zone else 60
+        for line in debug_lines:
+            cv2.putText(vis, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+            y0 += 18
+        event_lines = recent_events[-4:]
+        for ev in event_lines:
+            cv2.putText(vis, ev[:140], (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 255, 180), 1, cv2.LINE_AA)
+            y0 += 16
+    else:
+        cv2.putText(vis, "Debug[d]: OFF", (10, 90 if use_zone else 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+
+    cv2.putText(vis, f"Makes: {len([e for e in recent_events if 'MAKE' in e])}", (10, h - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def handle_keyboard_input(key, config, frame_idx, push_event_fn):
+    """Handle keyboard input; returns 'exit', 'pause', or None."""
+    if key == 27:  # ESC
+        return "exit"
+    elif key == ord('p'):
+        return "pause"
+    elif key == ord('d'):
+        config["DEBUG_OVERLAYS"] = not config["DEBUG_OVERLAYS"]
+    elif key == ord('m'):
+        config["MAKE_DEBUG_PRINT"] = not config["MAKE_DEBUG_PRINT"]
+        push_event_fn(f"[MAKEDBG] f{frame_idx} console logging {'ON' if config['MAKE_DEBUG_PRINT'] else 'OFF'}")
+    elif key == ord('z'):
+        config["STRICT_ZONE_GATE"] = not config["STRICT_ZONE_GATE"]
+        push_event_fn(f"[MAKEDBG] f{frame_idx} strict zone gate {'ON' if config['STRICT_ZONE_GATE'] else 'OFF'}")
+    elif key == ord('w'):
+        config["AUTO_PAUSE_ON_MAKE"] = not config["AUTO_PAUSE_ON_MAKE"]
+        push_event_fn(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if config['AUTO_PAUSE_ON_MAKE'] else 'OFF'}")
+    return None
 
 
 # ----------------------------
@@ -91,14 +435,10 @@ class PolyDrawer:
 
         cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.win, target_w, target_h)
-        screen_w_approx, screen_h_approx = 1920, 1080  # fallback; get_screen_size() called in main
-        try:
-            screen_w_approx, screen_h_approx = get_screen_size()
-        except:
-            pass
-        x = max(0, (screen_w_approx - target_w) // 2)
-        y = max(0, (screen_h_approx - target_h) // 2)
-        cv2.moveWindow(self.win, x, y)
+
+        screen_w_approx, screen_h_approx = get_screen_size()
+        center_window(self.win, target_w, target_h, screen_w_approx, screen_h_approx)
+
         cv2.setMouseCallback(self.win, self._mouse)
 
         while True:
@@ -153,20 +493,19 @@ def make_hsv_tuner(win="HSV Tuner", window_size=(1000, 260), screen_dims=None):
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win, window_size[0], window_size[1])
     if screen_dims:
-        x = max(0, (screen_dims[0] - window_size[0]) // 2)
-        y = max(0, (screen_dims[1] - window_size[1]) // 2)
-        cv2.moveWindow(win, x, y)
+        center_window(win, window_size[0], window_size[1], screen_dims[0], screen_dims[1])
 
     def nothing(x):
         pass
 
     # Reasonable defaults for "orange ball" — tune as needed
     # OLD HSV -- H (5, 25); S (120, 255); V (120, 255)
-    cv2.createTrackbar("H min", win, 20, 179, nothing)
-    cv2.createTrackbar("H max", win, 32, 179, nothing)
-    cv2.createTrackbar("S min", win, 150, 255, nothing)
+    # NEW HSV -- H (20, 32); S (150, 255); V (150, 255)
+    cv2.createTrackbar("H min", win, 5, 179, nothing)
+    cv2.createTrackbar("H max", win, 25, 179, nothing)
+    cv2.createTrackbar("S min", win, 120, 255, nothing)
     cv2.createTrackbar("S max", win, 255, 255, nothing)
-    cv2.createTrackbar("V min", win, 150, 255, nothing)
+    cv2.createTrackbar("V min", win, 120, 255, nothing)
     cv2.createTrackbar("V max", win, 255, 255, nothing)
 
     return win
@@ -238,13 +577,9 @@ def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
 
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, target_w, target_h)
-    try:
-        screen_w_full, screen_h_full = get_screen_size()
-        x = max(0, (screen_w_full - target_w) // 2)
-        y = max(0, (screen_h_full - target_h) // 2)
-        cv2.moveWindow(win_name, x, y)
-    except:
-        pass
+
+    screen_w_full, screen_h_full = get_screen_size()
+    center_window(win_name, target_w, target_h, screen_w_full, screen_h_full)
 
     disp_pts = np.array(
         [[int(round(px * scale + pad_x)), int(round(py * scale + pad_y))] for px, py in poly],
@@ -402,20 +737,9 @@ def main():
     main_y = max(0, (screen_h - screen_h) // 2)  # 0 for full-height windows
     cv2.moveWindow(main_win, main_x, main_y)
 
-    # Tunables (adjust as needed)
-    MIN_CONTOUR_AREA = 80    # reject noise (increase if too many false detections)
-    MAX_CONTOUR_AREA = 20_000  # reject giant blobs
-    MAX_TRACKABLE_AREA = 8_000  # prefer smaller blobs over giant fuel piles
-    MIN_TRACKABLE_CIRCULARITY = 0.20
-    MAX_TRACK_DIST = 90      # px; association radius
-    TRACK_MAX_MISSED = 8
-    MIN_TRACK_MOTION_PX = 2.5
+    # TODO: Properly integrate into code
     MOTION_MEMORY_FRAMES = int(0.50 * fps)
     TRACK_COOLDOWN_FRAMES = int(0.40 * fps)
-    MAKE_DEBUG_PRINT = True
-    EVENT_LOG_MAX = 12
-    STRICT_ZONE_GATE = False  # if True, require zone_ok for basket entry when zone ROI is enabled
-    AUTO_PAUSE_ON_MAKE = False  # toggle with 'w'
 
     # Tracks are keyed by integer ID and updated with nearest-neighbor matching.
     tracks = {}
@@ -435,9 +759,9 @@ def main():
         nonlocal last_event_text
         last_event_text = msg
         recent_events.append(msg)
-        if len(recent_events) > EVENT_LOG_MAX:
+        if len(recent_events) > CONFIG["EVENT_LOG_MAX"]:
             recent_events.pop(0)
-        if MAKE_DEBUG_PRINT:
+        if CONFIG["MAKE_DEBUG_PRINT"]:
             print(msg)
 
     # Rewind to beginning (we consumed 1 frame)
@@ -453,109 +777,21 @@ def main():
 
         mask = cv2.inRange(hsv, lower, upper)
 
-        # Clean mask
-        mask = cv2.medianBlur(mask, 5)
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+        mask = process_mask(mask)
 
         # Find candidate ball contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        candidates = []
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < MIN_CONTOUR_AREA or area > MAX_CONTOUR_AREA:
-                continue
-            (x, y, ww, hh) = cv2.boundingRect(c)
-            cx = x + ww / 2.0
-            cy = y + hh / 2.0
-            perimeter = cv2.arcLength(c, True)
-            circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 1e-6 else 0.0
-            aspect = (ww / float(hh)) if hh > 0 else 0.0
-            trackable = (
-                area <= MAX_TRACKABLE_AREA
-                and circularity >= MIN_TRACKABLE_CIRCULARITY
-                and 0.45 <= aspect <= 2.2
-            )
-            candidates.append(
-                {
-                    "area": area,
-                    "centroid": (cx, cy),
-                    "bbox": (x, y, ww, hh),
-                    "circularity": circularity,
-                    "trackable": trackable,
-                }
-            )
+        candidates = extract_candidates_from_contours(contours, CONFIG)
 
-        # Multi-object nearest-neighbor association
-        active_track_ids = [
-            tid for tid, tr in tracks.items()
-            if (frame_idx - tr["last_seen_frame"]) <= TRACK_MAX_MISSED
-        ]
-        trackable_indices = [i for i, cand in enumerate(candidates) if cand["trackable"]]
-        pairs = []
-        for tid in active_track_ids:
-            tx, ty = tracks[tid]["centroid"]
-            for ci in trackable_indices:
-                cx, cy = candidates[ci]["centroid"]
-                d = float(np.hypot(cx - tx, cy - ty))
-                if d <= MAX_TRACK_DIST:
-                    pairs.append((d, tid, ci))
-        pairs.sort(key=lambda t: t[0])
+        assigned_tracks, assigned_candidates, trackable_indices = match_tracks_to_candidates(
+            tracks, candidates, CONFIG, frame_idx
+        )
 
-        assigned_tracks = set()
-        assigned_candidates = set()
-        for _, tid, ci in pairs:
-            if tid in assigned_tracks or ci in assigned_candidates:
-                continue
-            track = tracks[tid]
-            cand = candidates[ci]
-            prev_centroid = track["centroid"]
-            new_centroid = cand["centroid"]
-            motion = float(np.hypot(new_centroid[0] - prev_centroid[0], new_centroid[1] - prev_centroid[1]))
-
-            track["centroid"] = new_centroid
-            track["bbox"] = cand["bbox"]
-            track["area"] = cand["area"]
-            track["last_seen_frame"] = frame_idx
-            track["motion_ema"] = 0.65 * track["motion_ema"] + 0.35 * motion
-            if motion >= MIN_TRACK_MOTION_PX:
-                track["last_motion_frame"] = frame_idx
-            if use_zone and point_in_poly(new_centroid, zone_poly):
-                track["last_seen_in_zone_frame"] = frame_idx
-
-            assigned_tracks.add(tid)
-            assigned_candidates.add(ci)
-
-        # Spawn new tracks for unmatched trackable candidates.
-        for ci in trackable_indices:
-            if ci in assigned_candidates:
-                continue
-            cand = candidates[ci]
-            zone_seen_frame = -10_000
-            if use_zone and point_in_poly(cand["centroid"], zone_poly):
-                zone_seen_frame = frame_idx
-            tracks[next_track_id] = {
-                "id": next_track_id,
-                "centroid": cand["centroid"],
-                "bbox": cand["bbox"],
-                "area": cand["area"],
-                "first_seen_frame": frame_idx,
-                "last_seen_frame": frame_idx,
-                "last_seen_in_zone_frame": zone_seen_frame,
-                "motion_ema": 0.0,
-                "last_motion_frame": -10_000,
-                "inside_basket": False,
-                "prev_inside_basket": False,
-                "cooldown_until": -1,
-                "visible": True,
-                "preferred": False,
-                "zone_ok": True,
-                "recently_moving": False,
-                "airborne": False,
-            }
-            next_track_id += 1
+        next_track_id = spawn_new_tracks(
+            candidates, assigned_candidates, trackable_indices, use_zone,
+            zone_poly, frame_idx, next_track_id, tracks
+        )
 
         # Per-track make logic: count a make immediately on ROI entry.
         made_track_id_this_frame = None
@@ -571,23 +807,23 @@ def main():
             inside_basket = visible and point_in_poly(track["centroid"], basket_poly)
             entering_basket = inside_basket and not track["prev_inside_basket"]
             if frame_idx >= track["cooldown_until"] and entering_basket:
-                entry_zone_ok = (not use_zone) or (not STRICT_ZONE_GATE) or zone_ok
+                entry_zone_ok = (not use_zone) or (not CONFIG["STRICT_ZONE_GATE"]) or zone_ok
                 entry_ok = entry_zone_ok and (recently_moving or airborne)
                 if entry_ok:
                     t = frame_idx / fps
                     made_events.append((frame_idx, t, tid))
                     track["cooldown_until"] = frame_idx + TRACK_COOLDOWN_FRAMES
                     made_track_id_this_frame = tid
-                    if AUTO_PAUSE_ON_MAKE:
+                    if CONFIG["AUTO_PAUSE_ON_MAKE"]:
                         auto_pause_pending = True
                     push_event(
                         f"[MAKEDBG] f{frame_idx} T{tid} MAKE (entry) "
-                        f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
+                        f"(zone_ok={zone_ok}, strict_zone={CONFIG["STRICT_ZONE_GATE"]}, moving={recently_moving}, airborne={airborne})"
                     )
                 else:
                     push_event(
                         f"[MAKEDBG] f{frame_idx} T{tid} REJECT enter "
-                        f"(zone_ok={zone_ok}, strict_zone={STRICT_ZONE_GATE}, moving={recently_moving}, airborne={airborne})"
+                        f"(zone_ok={zone_ok}, strict_zone={CONFIG["STRICT_ZONE_GATE"]}, moving={recently_moving}, airborne={airborne})"
                     )
 
             track["visible"] = visible
@@ -601,7 +837,7 @@ def main():
         # Drop very stale tracks to keep state compact.
         stale_track_ids = [
             tid for tid, tr in tracks.items()
-            if (frame_idx - tr["last_seen_frame"]) > TRACK_MAX_MISSED
+            if (frame_idx - tr["last_seen_frame"]) > CONFIG["TRACK_MAX_MISSED"]
         ]
         for tid in stale_track_ids:
             del tracks[tid]
@@ -669,7 +905,7 @@ def main():
                 label += " IN"
             if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
                 label += " MADE"
-            if STRICT_ZONE_GATE and not track["zone_ok"]:
+            if CONFIG["STRICT_ZONE_GATE"] and not track["zone_ok"]:
                 label += " Z0"
             if track["preferred"]:
                 label += " P"
@@ -692,10 +928,10 @@ def main():
                 f"Debug[d]: ON  candidates={len(candidates)} trackable={len(trackable_indices)}",
                 f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
                 f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
-                f"airborne_y_max={airborne_y_max} motion_px>={MIN_TRACK_MOTION_PX}",
-                f"strict_zone_gate[z]={STRICT_ZONE_GATE}",
-                f"auto_pause_on_make[w]={AUTO_PAUSE_ON_MAKE}",
-                f"make_debug_print[m]={MAKE_DEBUG_PRINT}",
+                f"airborne_y_max={airborne_y_max} motion_px>={CONFIG["MIN_TRACK_MOTION_PX"]}",
+                f"strict_zone_gate[z]={CONFIG["STRICT_ZONE_GATE"]}",
+                f"auto_pause_on_make[w]={CONFIG["AUTO_PAUSE_ON_MAKE"]}",
+                f"make_debug_print[m]={CONFIG["MAKE_DEBUG_PRINT"]}",
                 f"last_event={last_event_text}",
             ]
             y0 = 90 if use_zone else 60
@@ -767,14 +1003,14 @@ def main():
         elif key == ord('d'):
             debug_overlays = not debug_overlays
         elif key == ord('m'):
-            MAKE_DEBUG_PRINT = not MAKE_DEBUG_PRINT
-            push_event(f"[MAKEDBG] f{frame_idx} console logging {'ON' if MAKE_DEBUG_PRINT else 'OFF'}")
+            CONFIG["MAKE_DEBUG_PRINT"] = not CONFIG["MAKE_DEBUG_PRINT"]
+            push_event(f"[MAKEDBG] f{frame_idx} console logging {'ON' if CONFIG["MAKE_DEBUG_PRINT"] else 'OFF'}")
         elif key == ord('z'):
-            STRICT_ZONE_GATE = not STRICT_ZONE_GATE
-            push_event(f"[MAKEDBG] f{frame_idx} strict zone gate {'ON' if STRICT_ZONE_GATE else 'OFF'}")
+            CONFIG["STRICT_ZONE_GATE"] = not CONFIG["STRICT_ZONE_GATE"]
+            push_event(f"[MAKEDBG] f{frame_idx} strict zone gate {'ON' if CONFIG["STRICT_ZONE_GATE"] else 'OFF'}")
         elif key == ord('w'):
-            AUTO_PAUSE_ON_MAKE = not AUTO_PAUSE_ON_MAKE
-            push_event(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if AUTO_PAUSE_ON_MAKE else 'OFF'}")
+            CONFIG["AUTO_PAUSE_ON_MAKE"] = not CONFIG["AUTO_PAUSE_ON_MAKE"]
+            push_event(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if CONFIG["AUTO_PAUSE_ON_MAKE"] else 'OFF'}")
 
         frame_idx += 1
 
