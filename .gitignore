@@ -2,6 +2,10 @@
 assets/
 .vscode/
 
+# ML artifacts (large files)
+models/
+dataset/
+
 # Python-specific
 __pycache__
 
