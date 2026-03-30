@@ -5,6 +5,7 @@ assets/
 # ML artifacts (large files)
 models/
 dataset/
+*.pt
 
 # Python-specific
 __pycache__

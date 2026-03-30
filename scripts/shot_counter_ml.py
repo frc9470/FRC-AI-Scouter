@@ -31,6 +31,13 @@ import time
 from collections import defaultdict
 from enum import Enum, auto
 
+# Fix for macOS OpenMP library conflicts and GUI backend crashes
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# CRITICAL: Import ultralytics/torch BEFORE cv2 on macOS to avoid NSException/Segfaults
+from ultralytics import YOLO
+import torch
+
 import cv2
 import numpy as np
 
@@ -476,7 +483,6 @@ def main():
 
     # Load YOLO model
     print("Loading YOLO model...")
-    from ultralytics import YOLO
     model = YOLO(args.model)
     print(f"  Model loaded: {args.model}")
     print(f"  Classes: {model.names}")

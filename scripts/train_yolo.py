@@ -37,6 +37,13 @@ import argparse
 import os
 import sys
 
+# Fix for macOS OpenMP library conflicts
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# CRITICAL: Import ultralytics/torch BEFORE cv2 on macOS to avoid NSException/Segfaults
+from ultralytics import YOLO
+import torch
+
 
 def check_dataset(data_yaml_path):
     """Verify the dataset YAML file exists and is readable."""
@@ -89,12 +96,10 @@ def main():
 
     # Import ultralytics (triggers PyTorch import)
     print("Loading YOLO...")
-    from ultralytics import YOLO
 
     # Auto-detect device
     device = args.device
     if device is None:
-        import torch
         if torch.cuda.is_available():
             device = "cuda"
             print(f"Using CUDA GPU: {torch.cuda.get_device_name(0)}")
