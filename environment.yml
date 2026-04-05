@@ -7,3 +7,4 @@ dependencies:
   - opencv
   - tk
   - yt-dlp
+  - python-dotenv

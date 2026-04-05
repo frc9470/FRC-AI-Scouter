@@ -1,5 +1,6 @@
 import tkinter as tk
 
+# TODO: Turn into singleton class.
 def get_screen_size():
     try:
         print("[screen_utils.py] creating dummy window...")

@@ -31,44 +31,8 @@ import sys
 import cv2
 import numpy as np
 
+from config import CONFIG
 from utils import get_screen_size
-
-# ============================
-# Configuration Variables (adjust as needed)
-# ============================
-CONFIG = {
-    # Reject noise (increase if too many false detections)
-    "MIN_CONTOUR_AREA": 80,
-    # Reject giant blobs
-    "MAX_CONTOUR_AREA": 20_000,
-    # Prefer smaller blobs over giant fuel piles
-    "MAX_TRACKABLE_AREA": 8_000,
-    "MIN_TRACKABLE_CIRCULARITY": 0.20,
-    "MAX_TRACK_DIST": 90, # in px; association radius
-    "TRACK_MAX_MISSED": 8,
-    "MIN_TRACK_MOTION_PX": 2.5,
-    "MOTION_MEMORY_FRAMES_FACTOR": 0.50,
-    "TRACK_COOLDOWN_FRAMES_FACTOR": 0.40,
-    "EVENT_LOG_MAX": 12,
-    # If True, require `zone_ok` for basket entry when zone ROI is enabled
-    "STRICT_ZONE_GATE": False,
-    # Toggle with 'w' -- pauses after every successful shot detected
-    "AUTO_PAUSE_ON_MAKE": False,
-    "MAKE_DEBUG_PRINT": True,
-    "ZONE_WINDOW_FRAMES_FACTOR": 1.0,
-    "AIRBORNE_Y_MAX_FACTOR": 0.86,
-    "DEBUG_OVERLAYS": True,
-
-    # HSV values
-    # OLD HSV (practice field) -- H (5, 25); S (120, 255); V (120, 255)
-    # NEW HSV (official videos) -- H (20, 32); S (150, 255); V (150, 255)
-    "H_MIN": 20,
-    "H_MAX": 32,
-    "S_MIN": 150,
-    "S_MAX": 255,
-    "V_MIN": 150,
-    "V_MAX": 255,
-}
 
 def resize_to_fit(image, max_w, max_h):
     h, w = image.shape[:2]
@@ -78,7 +42,6 @@ def resize_to_fit(image, max_w, max_h):
     out_w = max(1, int(round(w * scale)))
     out_h = max(1, int(round(h * scale)))
     return cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
 
 # ============================
 # Helper: Window Management

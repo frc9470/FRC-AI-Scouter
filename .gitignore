@@ -1,9 +1,13 @@
 # Project-specific folders
 assets/
+test/
 .vscode/
 
 # Python-specific
 __pycache__
+
+# Environment config
+.env
 
 # Platform-specific files (Mac)
 .DS_Store
