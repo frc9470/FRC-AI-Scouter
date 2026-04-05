@@ -24,13 +24,13 @@ Run:
 - `python src/shot_counter.py assets/<path/to/video.mov>`
 """
 
-import json
 import os
 import sys
 
 import cv2
 import numpy as np
 
+from cache_handler import get_roi_cache_path, load_roi_cache, save_roi_cache, poly_from_cache
 from config import CONFIG
 from utils import get_screen_size
 
@@ -502,41 +502,6 @@ def get_hsv_bounds(win):
 def point_in_poly(pt, poly):
     # poly: Nx2 int32
     return cv2.pointPolygonTest(poly, pt, False) >= 0
-
-
-def get_roi_cache_path():
-    return os.path.join(os.path.dirname(__file__), "roi_cache.json")
-
-
-def load_roi_cache(path):
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_roi_cache(path, cache):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
-    except Exception as e:
-        print(f"Warning: failed to save ROI cache to {path}: {e}")
-
-
-def poly_from_cache(raw):
-    if not isinstance(raw, list) or len(raw) < 3:
-        return np.array([], dtype=np.int32)
-    try:
-        poly = np.array(raw, dtype=np.int32)
-    except Exception:
-        return np.array([], dtype=np.int32)
-    if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
-        return np.array([], dtype=np.int32)
-    return poly
 
 
 def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
