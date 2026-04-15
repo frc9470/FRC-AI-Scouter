@@ -796,6 +796,7 @@ def main():
         )
 
         # Handle zone updates for matched tracks
+        # TODO: Zone logic, will remove later.
         for tid in assigned_tracks:
             if use_zone and point_in_poly(tracks[tid]["centroid"], zone_poly):
                 tracks[tid]["last_seen_in_zone_frame"] = frame_idx
@@ -844,7 +845,7 @@ def main():
         combo = np.hstack([vis, mask_bgr])
         combo = resize_to_fit(combo, screen_w, screen_h)
 
-        cv2.imshow(main_win, combo)
+        cv2.imshow(main_win, vis)
 
         # Keep trackbars visible on a larger canvas and show current HSV bounds.
         tuner_canvas = np.zeros((hsv_win_h, hsv_win_w, 3), dtype=np.uint8)
@@ -870,6 +871,7 @@ def main():
         )
         cv2.imshow(tuner_win, tuner_canvas)
 
+        # TODO: Allow toggling settings while paused.
         if auto_pause_pending:
             auto_pause_pending = False
             push_event(f"[MAKEDBG] f{frame_idx} auto-paused on make; press 'p' to resume")
