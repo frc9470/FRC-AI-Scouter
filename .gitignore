@@ -1,6 +1,7 @@
 # Project-specific folders
 assets/
 .vscode/
+scripts/roi_cache.json
 
 # Python-specific
 __pycache__
