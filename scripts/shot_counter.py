@@ -743,7 +743,7 @@ def main():
     main_win = "Shot Counter (Left=Video, Right=Mask)"
     cv2.namedWindow(main_win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(main_win, screen_w, screen_h)
-    center_window(main_win, hsv_win_w, hsv_win_h, screen_w, screen_h)
+    center_window(main_win, screen_w, screen_h, screen_w, screen_h)
 
     # Pre-compute frame-dependent config values
     CONFIG["MOTION_MEMORY_FRAMES"] = int(CONFIG["MOTION_MEMORY_FRAMES_FACTOR"] * fps)
