@@ -103,12 +103,42 @@ def center_window(win_name, window_w, window_h, screen_w, screen_h):
 # Helpers: Image Processing
 # ============================
 def process_mask(mask):
-    """Apply morphological operations to clean the binary mask."""
+    """Clean the binary mask and split merged blobs into individual balls."""
+    # Remove noise
     mask = cv2.medianBlur(mask, 5)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
-    return mask
+    # NOTE: Dilation intentionally removed — it merges nearby balls into
+    #       giant blobs that exceed MAX_TRACKABLE_AREA and become untrackable.
+
+    # --- Split touching / merged blobs via distance transform + watershed ---
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    if dist.max() == 0:
+        return mask
+
+    # Find local maxima of the distance transform (≈ individual ball centers).
+    # A pixel is a local max if its value equals the neighbourhood maximum
+    # AND it is far enough from the mask edge to represent a real ball core.
+    peak_kernel = np.ones((15, 15), np.uint8)
+    dilated_dist = cv2.dilate(dist, peak_kernel)
+    local_max = ((dist == dilated_dist) & (dist > 4)).astype(np.uint8) * 255
+
+    n_labels, markers = cv2.connectedComponents(local_max)
+    if n_labels <= 1:
+        return mask  # No peaks → nothing to split
+
+    # Prepare markers for watershed:
+    #   background = 1, unknown (between peaks & bg) = 0, ball regions = 2, 3, …
+    markers = np.int32(markers + 1)
+    markers[mask == 0] = 1
+    markers[(mask > 0) & (local_max == 0)] = 0
+
+    cv2.watershed(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), markers)
+
+    # Each region > 1 is an individual ball; boundaries (= -1) become gaps.
+    result = np.zeros_like(mask)
+    result[markers > 1] = 255
+    return result
 
 
 def extract_candidates_from_contours(contours, config):
@@ -332,16 +362,17 @@ def draw_candidates(vis, candidates, config):
         cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, 1)
         cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, color, -1)
 
-        if trackable:
-            label = f"c{idx} a={int(area)} cir={circ:.2f}"
-        else:
-            reject_str = ",".join(failed)
-            label = f"c{idx} a={int(area)} X:{reject_str}"
+        # TODO: Selectively add back later.
+        # if trackable:
+        #     label = f"c{idx} a={int(area)} cir={circ:.2f}"
+        # else:
+        #     reject_str = ",".join(failed)
+        #     label = f"c{idx} a={int(area)} X:{reject_str}"
 
-        cv2.putText(
-            vis, label, (x, max(14, y - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
-        )
+        # cv2.putText(
+        #     vis, label, (x, max(14, y - 4)),
+        #     cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
+        # )
 
 
 def draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, config):
@@ -366,25 +397,26 @@ def draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, config):
 
         cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, thickness)
         cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 5, color, -1)
-        label = f"T{tid} m={track['motion_ema']:.1f}"
-        if track["inside_basket"]:
-            label += " IN"
-        if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
-            label += " MADE"
-        if config["STRICT_ZONE_GATE"] and not track["zone_ok"]:
-            label += " Z0"
-        if track["preferred"]:
-            label += " P"
-        cv2.putText(
-            vis,
-            label,
-            (x, y + hh + 14),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+        # TODO: Selectively add back later.
+        # label = f"T{tid} m={track['motion_ema']:.1f}"
+        # if track["inside_basket"]:
+        #     label += " IN"
+        # if made_track_id_this_frame is not None and tid == made_track_id_this_frame:
+        #     label += " MADE"
+        # if config["STRICT_ZONE_GATE"] and not track["zone_ok"]:
+        #     label += " Z0"
+        # if track["preferred"]:
+        #     label += " P"
+        # cv2.putText(
+        #     vis,
+        #     label,
+        #     (x, y + hh + 14),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.45,
+        #     color,
+        #     1,
+        #     cv2.LINE_AA,
+        # )
 
 
 def draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, config, h,
