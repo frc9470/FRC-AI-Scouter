@@ -59,6 +59,13 @@ CONFIG = {
     "AIRBORNE_Y_MAX_FACTOR": 0.86,
     "DEBUG_OVERLAYS": True,
 
+    # Filter visualization toggles (keys 1-5, all OFF by default)
+    "SHOW_REJECT_MIN_AREA": False,
+    "SHOW_REJECT_MAX_AREA": False,
+    "SHOW_REJECT_MAX_TRACKABLE": False,
+    "SHOW_REJECT_CIRCULARITY": False,
+    "SHOW_REJECT_ASPECT": False,
+
     # HSV values
     # OLD HSV (practice field) -- H (5, 25); S (120, 255); V (120, 255)
     # NEW HSV (official videos) -- H (20, 32); S (150, 255); V (150, 255)
@@ -103,29 +110,40 @@ def process_mask(mask):
 
 
 def extract_candidates_from_contours(contours, config):
-    """Extract ball candidate objects from contours based on shape/area criteria."""
+    """Extract ball candidate objects from contours, tagging each with failed filters."""
     candidates = []
     for c in contours:
         area = cv2.contourArea(c)
-        if area < config["MIN_CONTOUR_AREA"] or area > config["MAX_CONTOUR_AREA"]:
-            continue
+        if area < 1:
+            continue  # Skip degenerate zero-area contours
         (x, y, ww, hh) = cv2.boundingRect(c)
         cx = x + ww / 2.0
         cy = y + hh / 2.0
         perimeter = cv2.arcLength(c, True)
         circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 1e-6 else 0.0
         aspect = (ww / float(hh)) if hh > 0 else 0.0
-        trackable = (
-            area <= config["MAX_TRACKABLE_AREA"]
-            and circularity >= config["MIN_TRACKABLE_CIRCULARITY"]
-            and 0.45 <= aspect <= 2.2
-        )
+
+        failed_filters = []
+        if area < config["MIN_CONTOUR_AREA"]:
+            failed_filters.append("min_area")
+        if area > config["MAX_CONTOUR_AREA"]:
+            failed_filters.append("max_area")
+        if area > config["MAX_TRACKABLE_AREA"]:
+            failed_filters.append("max_trackable")
+        if circularity < config["MIN_TRACKABLE_CIRCULARITY"]:
+            failed_filters.append("circularity")
+        if not (0.45 <= aspect <= 2.2):
+            failed_filters.append("aspect")
+
+        trackable = len(failed_filters) == 0
         candidates.append({
             "area": area,
             "centroid": (cx, cy),
             "bbox": (x, y, ww, hh),
             "circularity": circularity,
+            "aspect": aspect,
             "trackable": trackable,
+            "failed_filters": failed_filters,
         })
     return candidates
 
@@ -271,29 +289,56 @@ def draw_rois(vis, basket_poly, zone_poly, use_zone):
         cv2.putText(vis, "9470 Zone ROI", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
 
 
-def draw_candidates(vis, candidates, debug_overlays):
-    """Draw candidate contours on visualization."""
-    if not debug_overlays:
+# Filter stage definitions: (name, config_toggle_key, BGR color)
+FILTER_STAGES = [
+    ("min_area",      "SHOW_REJECT_MIN_AREA",      (0, 0, 0)),        # Black
+    ("max_area",      "SHOW_REJECT_MAX_AREA",      (255, 0, 255)),    # Magenta
+    ("max_trackable", "SHOW_REJECT_MAX_TRACKABLE", (255, 0, 0)),      # Blue
+    ("circularity",   "SHOW_REJECT_CIRCULARITY",   (255, 255, 0)),    # Cyan
+    ("aspect",        "SHOW_REJECT_ASPECT",        (0, 255, 255)),    # Yellow
+]
+FILTER_COLORS = {name: color for name, _, color in FILTER_STAGES}
+FILTER_CONFIG_KEYS = {name: key for name, key, _ in FILTER_STAGES}
+
+
+def draw_candidates(vis, candidates, config):
+    """Draw candidate contours on visualization, with per-filter rejection toggles."""
+    if not config["DEBUG_OVERLAYS"]:
         return
     for idx, cand in enumerate(candidates):
+        failed = cand["failed_filters"]
+        trackable = cand["trackable"]
+
+        if trackable:
+            color = (0, 255, 0)
+        else:
+            # Only draw if at least one of this candidate's failed-filter toggles is ON
+            first_enabled_color = None
+            for f in failed:
+                if config[FILTER_CONFIG_KEYS[f]]:
+                    first_enabled_color = FILTER_COLORS[f]
+                    break
+            if first_enabled_color is None:
+                continue  # No toggle active for this rejection — skip drawing
+            color = first_enabled_color
+
         area = cand["area"]
         cxy = cand["centroid"]
-        bb = cand["bbox"]
+        x, y, ww, hh = cand["bbox"]
         circ = cand["circularity"]
-        trackable = cand["trackable"]
-        x, y, ww, hh = bb
-        color = (0, 255, 0) if trackable else (0, 180, 180)
+
         cv2.rectangle(vis, (x, y), (x + ww, y + hh), color, 1)
         cv2.circle(vis, (int(cxy[0]), int(cxy[1])), 3, color, -1)
+
+        if trackable:
+            label = f"c{idx} a={int(area)} cir={circ:.2f}"
+        else:
+            reject_str = ",".join(failed)
+            label = f"c{idx} a={int(area)} X:{reject_str}"
+
         cv2.putText(
-            vis,
-            f"c{idx} a={int(area)} cir={circ:.2f}",
-            (x, max(14, y - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            color,
-            1,
-            cv2.LINE_AA,
+            vis, label, (x, max(14, y - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
         )
 
 
@@ -348,8 +393,20 @@ def draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, config, h,
         preferred_tracks = [tr for tr in visible_tracks if tr["preferred"]]
         inside_ids = [tid for tid, tr in tracks.items() if tr["inside_basket"]]
         trackable_count = sum(1 for c in candidates if c["trackable"])
+
+        # Per-filter rejection counts
+        rc = {}
+        for cand in candidates:
+            for f in cand.get("failed_filters", []):
+                rc[f] = rc.get(f, 0) + 1
+        filter_info = " ".join(
+            f"{i+1}:{name}({'ON' if config[cfg] else 'off'})={rc.get(name, 0)}"
+            for i, (name, cfg, _) in enumerate(FILTER_STAGES)
+        )
+
         debug_lines = [
             f"Debug[d]: ON  candidates={len(candidates)} trackable={trackable_count}",
+            f"filters: {filter_info}",
             f"tracks={len(tracks)} visible={len(visible_tracks)} preferred={len(preferred_tracks)}",
             f"inside_roi_tracks={inside_ids[:6]} use_zone={use_zone}",
             f"motion_px>={config['MIN_TRACK_MOTION_PX']:.1f}",
@@ -390,6 +447,20 @@ def handle_keyboard_input(key, config, frame_idx, push_event_fn):
     elif key == ord('w'):
         config["AUTO_PAUSE_ON_MAKE"] = not config["AUTO_PAUSE_ON_MAKE"]
         push_event_fn(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if config['AUTO_PAUSE_ON_MAKE'] else 'OFF'}")
+    else:
+        # Keys 1-5: toggle filter rejection visualization
+        _filter_keys = {
+            ord('1'): ("SHOW_REJECT_MIN_AREA",      "min_area"),
+            ord('2'): ("SHOW_REJECT_MAX_AREA",      "max_area"),
+            ord('3'): ("SHOW_REJECT_MAX_TRACKABLE", "max_trackable"),
+            ord('4'): ("SHOW_REJECT_CIRCULARITY",   "circularity"),
+            ord('5'): ("SHOW_REJECT_ASPECT",        "aspect"),
+        }
+        if key in _filter_keys:
+            cfg_key, name = _filter_keys[key]
+            config[cfg_key] = not config[cfg_key]
+            state = 'ON' if config[cfg_key] else 'OFF'
+            push_event_fn(f"[FILTER] f{frame_idx} show rejected:{name} {state}")
     return None
 
 
@@ -835,7 +906,7 @@ def main():
         # ----------------------------
         vis = frame.copy()
         draw_rois(vis, basket_poly, zone_poly, use_zone)
-        draw_candidates(vis, candidates, CONFIG["DEBUG_OVERLAYS"])
+        draw_candidates(vis, candidates, CONFIG)
         draw_tracks(vis, tracks, frame_idx, made_track_id_this_frame, CONFIG)
         draw_debug_info(vis, candidates, tracks, frame_idx, use_zone, CONFIG, h,
                         last_event_text, recent_events, made_events)
