@@ -73,9 +73,9 @@ CONFIG = {
     # NEW HSV (official videos) -- H (20, 32); S (150, 255); V (150, 255)
     "H_MIN": 20,
     "H_MAX": 32,
-    "S_MIN": 150,
+    "S_MIN": 0,
     "S_MAX": 255,
-    "V_MIN": 150,
+    "V_MIN": 0,
     "V_MAX": 255,
 }
 
@@ -979,13 +979,45 @@ def main():
         )
         cv2.imshow(tuner_win, tuner_canvas)
 
+        def _rebuild_paused_frame():
+            """Rebuild the display frame from current CONFIG state (for use while paused)."""
+            if CONFIG["SHOW_MASK_VIEW"]:
+                paused_frame = mask_bgr.copy()
+            else:
+                paused_frame = frame.copy()
+                draw_rois(paused_frame, basket_poly, zone_poly, use_zone)
+                draw_candidates(paused_frame, candidates, CONFIG)
+                draw_tracks(paused_frame, tracks, frame_idx, made_track_id_this_frame, CONFIG)
+                draw_debug_info(paused_frame, candidates, tracks, frame_idx, use_zone, CONFIG, h,
+                                last_event_text, recent_events, made_events)
+            # Overlay HSV pick if active
+            if hsv_pick["hsv_val"] is not None:
+                hv, sv, vv = hsv_pick["hsv_val"]
+                pick_text = f"HSV at click: H={hv} S={sv} V={vv}"
+                text_y = h - 50
+                cv2.putText(paused_frame, pick_text, (10, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(paused_frame, pick_text, (10, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            return paused_frame
+
         def _pause_loop():
-            """Block until 'p' or ESC, processing HSV picks on click."""
+            """Block until 'p' or ESC, processing HSV picks and view toggles."""
+            _filter_keys = {
+                ord('1'): ("SHOW_REJECT_MIN_AREA",      "min_area"),
+                ord('2'): ("SHOW_REJECT_MAX_AREA",      "max_area"),
+                ord('3'): ("SHOW_REJECT_MAX_TRACKABLE", "max_trackable"),
+                ord('4'): ("SHOW_REJECT_CIRCULARITY",   "circularity"),
+                ord('5'): ("SHOW_REJECT_ASPECT",        "aspect"),
+            }
             while True:
                 k2 = cv2.waitKey(50) & 0xFF
-                # Check for HSV color picker clicks while paused
+                needs_redraw = False
+
+                # HSV color picker clicks
                 if hsv_pick["pos"] is not None:
-                    disp_h, disp_w = display_frame.shape[:2]
+                    cur_frame = _rebuild_paused_frame()
+                    disp_h, disp_w = cur_frame.shape[:2]
                     px = int(hsv_pick["pos"][0] * w / disp_w) if disp_w > 0 else 0
                     py = int(hsv_pick["pos"][1] * h / disp_h) if disp_h > 0 else 0
                     px = max(0, min(px, w - 1))
@@ -995,15 +1027,25 @@ def main():
                     hsv_pick["pos"] = None
                     hv, sv, vv = hsv_pick["hsv_val"]
                     print(f"[HSV PICK] frame {frame_idx}: pixel ({px},{py}) -> H={hv} S={sv} V={vv}")
-                    # Redraw with updated overlay
-                    redraw = (mask_bgr if CONFIG["SHOW_MASK_VIEW"] else vis).copy()
-                    pick_text = f"HSV at click: H={hv} S={sv} V={vv}"
-                    text_y = h - 50
-                    cv2.putText(redraw, pick_text, (10, text_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
-                    cv2.putText(redraw, pick_text, (10, text_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                    cv2.imshow(main_win, redraw)
+                    needs_redraw = True
+
+                # 't' toggles mask view
+                if k2 == ord('t'):
+                    CONFIG["SHOW_MASK_VIEW"] = not CONFIG["SHOW_MASK_VIEW"]
+                    push_event(f"[VIEW] f{frame_idx} mask view {'ON' if CONFIG['SHOW_MASK_VIEW'] else 'OFF'}")
+                    needs_redraw = True
+
+                # '1'-'5' toggle filter rejection layers
+                if k2 in _filter_keys:
+                    cfg_key, name = _filter_keys[k2]
+                    CONFIG[cfg_key] = not CONFIG[cfg_key]
+                    state = 'ON' if CONFIG[cfg_key] else 'OFF'
+                    push_event(f"[FILTER] f{frame_idx} show rejected:{name} {state}")
+                    needs_redraw = True
+
+                if needs_redraw:
+                    cv2.imshow(main_win, _rebuild_paused_frame())
+
                 if k2 == ord('p') or k2 == 27:
                     return k2
 
