@@ -72,10 +72,10 @@ CONFIG = {
     # OLD HSV (practice field) -- H (5, 25); S (120, 255); V (120, 255)
     # NEW HSV (official videos) -- H (20, 32); S (150, 255); V (150, 255)
     "H_MIN": 20,
-    "H_MAX": 32,
-    "S_MIN": 0,
+    "H_MAX": 36,
+    "S_MIN": 80,
     "S_MAX": 255,
-    "V_MIN": 0,
+    "V_MIN": 80,
     "V_MAX": 255,
 }
 
@@ -103,42 +103,13 @@ def center_window(win_name, window_w, window_h, screen_w, screen_h):
 # Helpers: Image Processing
 # ============================
 def process_mask(mask):
-    """Clean the binary mask and split merged blobs into individual balls."""
-    # Remove noise
+    """Apply morphological operations to clean the binary mask."""
     mask = cv2.medianBlur(mask, 5)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    # NOTE: Dilation intentionally removed — it merges nearby balls into
+    # NOTE: Dilation intentionally removed -- it merges nearby balls into
     #       giant blobs that exceed MAX_TRACKABLE_AREA and become untrackable.
-
-    # --- Split touching / merged blobs via distance transform + watershed ---
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    if dist.max() == 0:
-        return mask
-
-    # Find local maxima of the distance transform (≈ individual ball centers).
-    # A pixel is a local max if its value equals the neighbourhood maximum
-    # AND it is far enough from the mask edge to represent a real ball core.
-    peak_kernel = np.ones((15, 15), np.uint8)
-    dilated_dist = cv2.dilate(dist, peak_kernel)
-    local_max = ((dist == dilated_dist) & (dist > 4)).astype(np.uint8) * 255
-
-    n_labels, markers = cv2.connectedComponents(local_max)
-    if n_labels <= 1:
-        return mask  # No peaks → nothing to split
-
-    # Prepare markers for watershed:
-    #   background = 1, unknown (between peaks & bg) = 0, ball regions = 2, 3, …
-    markers = np.int32(markers + 1)
-    markers[mask == 0] = 1
-    markers[(mask > 0) & (local_max == 0)] = 0
-
-    cv2.watershed(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), markers)
-
-    # Each region > 1 is an individual ball; boundaries (= -1) become gaps.
-    result = np.zeros_like(mask)
-    result[markers > 1] = 255
-    return result
+    return mask
 
 
 def extract_candidates_from_contours(contours, config):
