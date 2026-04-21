@@ -821,6 +821,15 @@ def main():
     cv2.resizeWindow(main_win, screen_w, screen_h)
     center_window(main_win, screen_w, screen_h, screen_w, screen_h)
 
+    # Mouse callback for HSV color picker on the main window
+    hsv_pick = {"pos": None, "hsv_val": None, "frame_idx": -1000}
+
+    def _main_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            hsv_pick["pos"] = (x, y)
+
+    cv2.setMouseCallback(main_win, _main_mouse)
+
     # Pre-compute frame-dependent config values
     CONFIG["MOTION_MEMORY_FRAMES"] = int(CONFIG["MOTION_MEMORY_FRAMES_FACTOR"] * fps)
     CONFIG["TRACK_COOLDOWN_FRAMES"] = int(CONFIG["TRACK_COOLDOWN_FRAMES_FACTOR"] * fps)
@@ -919,7 +928,32 @@ def main():
         # Show side-by-side mask for tuning
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
-        cv2.imshow(main_win, mask_bgr if CONFIG["SHOW_MASK_VIEW"] else vis)
+        # HSV color picker: sample the clicked pixel from the original frame
+        display_frame = mask_bgr if CONFIG["SHOW_MASK_VIEW"] else vis
+        if hsv_pick["pos"] is not None:
+            # Map click coords from display window back to frame coords
+            disp_h, disp_w = display_frame.shape[:2]
+            px = int(hsv_pick["pos"][0] * w / disp_w) if disp_w > 0 else 0
+            py = int(hsv_pick["pos"][1] * h / disp_h) if disp_h > 0 else 0
+            px = max(0, min(px, w - 1))
+            py = max(0, min(py, h - 1))
+            hsv_pick["hsv_val"] = tuple(int(v) for v in hsv[py, px])
+            hsv_pick["frame_idx"] = frame_idx
+            hsv_pick["pos"] = None  # Consume the click
+            hv, sv, vv = hsv_pick["hsv_val"]
+            print(f"[HSV PICK] frame {frame_idx}: pixel ({px},{py}) -> H={hv} S={sv} V={vv}")
+
+        # Draw sampled HSV value on frame (persists for 90 frames after click)
+        if hsv_pick["hsv_val"] is not None and (frame_idx - hsv_pick["frame_idx"]) <= 90:
+            hv, sv, vv = hsv_pick["hsv_val"]
+            pick_text = f"HSV at click: H={hv} S={sv} V={vv}"
+            text_y = h - 50
+            cv2.putText(display_frame, pick_text, (10, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(display_frame, pick_text, (10, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+        cv2.imshow(main_win, display_frame)
 
         # Keep trackbars visible on a larger canvas and show current HSV bounds.
         tuner_canvas = np.zeros((hsv_win_h, hsv_win_w, 3), dtype=np.uint8)
@@ -945,15 +979,38 @@ def main():
         )
         cv2.imshow(tuner_win, tuner_canvas)
 
-        # TODO: Allow toggling settings while paused.
+        def _pause_loop():
+            """Block until 'p' or ESC, processing HSV picks on click."""
+            while True:
+                k2 = cv2.waitKey(50) & 0xFF
+                # Check for HSV color picker clicks while paused
+                if hsv_pick["pos"] is not None:
+                    disp_h, disp_w = display_frame.shape[:2]
+                    px = int(hsv_pick["pos"][0] * w / disp_w) if disp_w > 0 else 0
+                    py = int(hsv_pick["pos"][1] * h / disp_h) if disp_h > 0 else 0
+                    px = max(0, min(px, w - 1))
+                    py = max(0, min(py, h - 1))
+                    hsv_pick["hsv_val"] = tuple(int(v) for v in hsv[py, px])
+                    hsv_pick["frame_idx"] = frame_idx
+                    hsv_pick["pos"] = None
+                    hv, sv, vv = hsv_pick["hsv_val"]
+                    print(f"[HSV PICK] frame {frame_idx}: pixel ({px},{py}) -> H={hv} S={sv} V={vv}")
+                    # Redraw with updated overlay
+                    redraw = (mask_bgr if CONFIG["SHOW_MASK_VIEW"] else vis).copy()
+                    pick_text = f"HSV at click: H={hv} S={sv} V={vv}"
+                    text_y = h - 50
+                    cv2.putText(redraw, pick_text, (10, text_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.putText(redraw, pick_text, (10, text_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.imshow(main_win, redraw)
+                if k2 == ord('p') or k2 == 27:
+                    return k2
+
         if auto_pause_pending:
             auto_pause_pending = False
             push_event(f"[MAKEDBG] f{frame_idx} auto-paused on make; press 'p' to resume")
-            while True:
-                k2 = cv2.waitKey(0) & 0xFF
-                if k2 == ord('p') or k2 == 27:
-                    break
-            if k2 == 27:
+            if _pause_loop() == 27:
                 break
 
         key = cv2.waitKey(1) & 0xFF
@@ -961,11 +1018,7 @@ def main():
         if key_action == "exit":
             break
         elif key_action == "pause":
-            while True:
-                k2 = cv2.waitKey(0) & 0xFF
-                if k2 == ord('p') or k2 == 27:
-                    break
-            if k2 == 27:
+            if _pause_loop() == 27:
                 break
 
         frame_idx += 1
