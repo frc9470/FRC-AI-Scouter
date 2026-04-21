@@ -65,6 +65,8 @@ CONFIG = {
     "SHOW_REJECT_MAX_TRACKABLE": False,
     "SHOW_REJECT_CIRCULARITY": False,
     "SHOW_REJECT_ASPECT": False,
+    # Toggle with 't' -- switch main window between video and mask view
+    "SHOW_MASK_VIEW": False,
 
     # HSV values
     # OLD HSV (practice field) -- H (5, 25); S (120, 255); V (120, 255)
@@ -447,6 +449,9 @@ def handle_keyboard_input(key, config, frame_idx, push_event_fn):
     elif key == ord('w'):
         config["AUTO_PAUSE_ON_MAKE"] = not config["AUTO_PAUSE_ON_MAKE"]
         push_event_fn(f"[MAKEDBG] f{frame_idx} auto pause on make {'ON' if config['AUTO_PAUSE_ON_MAKE'] else 'OFF'}")
+    elif key == ord('t'):
+        config["SHOW_MASK_VIEW"] = not config["SHOW_MASK_VIEW"]
+        push_event_fn(f"[VIEW] f{frame_idx} mask view {'ON' if config['SHOW_MASK_VIEW'] else 'OFF'}")
     else:
         # Keys 1-5: toggle filter rejection visualization
         _filter_keys = {
@@ -913,10 +918,8 @@ def main():
 
         # Show side-by-side mask for tuning
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        combo = np.hstack([vis, mask_bgr])
-        combo = resize_to_fit(combo, screen_w, screen_h)
 
-        cv2.imshow(main_win, vis)
+        cv2.imshow(main_win, mask_bgr if CONFIG["SHOW_MASK_VIEW"] else vis)
 
         # Keep trackbars visible on a larger canvas and show current HSV bounds.
         tuner_canvas = np.zeros((hsv_win_h, hsv_win_w, 3), dtype=np.uint8)
