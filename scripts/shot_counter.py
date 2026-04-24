@@ -612,6 +612,31 @@ def get_hsv_bounds(win):
     return lower, upper
 
 
+def make_runtime_config(overrides=None):
+    """Create an isolated runtime config, optionally applying overrides."""
+    config = dict(CONFIG)
+    if not overrides:
+        return config
+
+    for key, value in overrides.items():
+        if key in config:
+            config[key] = value
+    return config
+
+
+def get_hsv_bounds_from_config(config):
+    """Return HSV bounds from a config dict without relying on OpenCV trackbars."""
+    lower = np.array(
+        [config["H_MIN"], config["S_MIN"], config["V_MIN"]],
+        dtype=np.uint8,
+    )
+    upper = np.array(
+        [config["H_MAX"], config["S_MAX"], config["V_MAX"]],
+        dtype=np.uint8,
+    )
+    return lower, upper
+
+
 # ----------------------------
 # Geometry helper
 # ----------------------------
@@ -694,6 +719,194 @@ def confirm_cached_poly(frame, poly, win_name, title, prompt, display_size):
         if k in (27, ord("s"), ord("S")):
             cv2.destroyWindow(win_name)
             return "skip"
+
+
+def normalize_poly_points(points):
+    """Normalize ROI point data into an OpenCV-friendly Nx2 int32 polygon."""
+    poly = np.array(points, dtype=np.int32)
+    if poly.ndim == 3 and poly.shape[1] == 1 and poly.shape[2] == 2:
+        poly = poly.reshape((-1, 2))
+    if poly.ndim != 2 or poly.shape[1] != 2 or len(poly) < 3:
+        raise ValueError("ROI polygon must contain at least 3 (x, y) points.")
+    return poly
+
+
+def serialize_made_events(made_events):
+    """Convert made-event tuples into JSON-friendly dicts."""
+    return [
+        {"frame": int(frame_idx), "seconds": float(seconds), "track_id": int(track_id)}
+        for frame_idx, seconds, track_id in made_events
+    ]
+
+
+def build_analysis_context(frame_shape, fps, basket_poly, zone_poly=None, config_overrides=None):
+    """Build reusable state for headless or interactive analysis."""
+    height, width = frame_shape[:2]
+    basket_poly = normalize_poly_points(basket_poly)
+    if zone_poly is None or len(zone_poly) < 3:
+        zone_poly = np.array([], dtype=np.int32)
+    else:
+        zone_poly = normalize_poly_points(zone_poly)
+
+    config = make_runtime_config(config_overrides)
+    config["MOTION_MEMORY_FRAMES"] = int(config["MOTION_MEMORY_FRAMES_FACTOR"] * fps)
+    config["TRACK_COOLDOWN_FRAMES"] = int(config["TRACK_COOLDOWN_FRAMES_FACTOR"] * fps)
+
+    return {
+        "config": config,
+        "fps": float(fps or 30.0),
+        "frame_size": (int(height), int(width)),
+        "basket_poly": basket_poly,
+        "zone_poly": zone_poly,
+        "use_zone": zone_poly.size != 0,
+        "zone_window_frames": int(config["ZONE_WINDOW_FRAMES_FACTOR"] * (fps or 30.0)),
+        "airborne_y_max": int(config["AIRBORNE_Y_MAX_FACTOR"] * height),
+        "tracks": {},
+        "next_track_id": 1,
+        "made_events": [],
+        "last_event_text": "none",
+        "recent_events": [],
+        "current_candidate_count": 0,
+        "current_trackable_count": 0,
+        "current_visible_tracks": 0,
+        "current_frame_idx": 0,
+        "last_lower": None,
+        "last_upper": None,
+    }
+
+
+def push_analysis_event(context, msg, event_callback=None):
+    """Record a debug/event message for either CLI or web callers."""
+    context["last_event_text"] = msg
+    context["recent_events"].append(msg)
+    if len(context["recent_events"]) > context["config"]["EVENT_LOG_MAX"]:
+        context["recent_events"].pop(0)
+    if event_callback is not None:
+        event_callback(msg)
+    if context["config"]["MAKE_DEBUG_PRINT"]:
+        print(msg)
+
+
+def analyze_frame(frame, frame_idx, context, lower=None, upper=None, event_callback=None):
+    """Run one frame through the current HSV-based shot counting pipeline."""
+    config = context["config"]
+    basket_poly = context["basket_poly"]
+    zone_poly = context["zone_poly"]
+    use_zone = context["use_zone"]
+    fps = context["fps"]
+    tracks = context["tracks"]
+
+    if lower is None or upper is None:
+        lower, upper = get_hsv_bounds_from_config(config)
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = process_mask(mask)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = extract_candidates_from_contours(contours, config)
+
+    assigned_tracks, assigned_candidates, trackable_indices = match_tracks_to_candidates(
+        tracks, candidates, config, frame_idx
+    )
+
+    for tid in assigned_tracks:
+        if use_zone and point_in_poly(tracks[tid]["centroid"], zone_poly):
+            tracks[tid]["last_seen_in_zone_frame"] = frame_idx
+
+    context["next_track_id"] = spawn_new_tracks(
+        candidates,
+        assigned_candidates,
+        trackable_indices,
+        use_zone,
+        zone_poly,
+        frame_idx,
+        context["next_track_id"],
+        tracks,
+    )
+
+    made_track_id_this_frame = None
+    for tid, track in tracks.items():
+        entering_basket, zone_ok, recently_moving, airborne = update_track_state(
+            track,
+            frame_idx,
+            basket_poly,
+            zone_poly,
+            use_zone,
+            config,
+            context["zone_window_frames"],
+            context["airborne_y_max"],
+        )
+        is_make = handle_make_detection(
+            track,
+            frame_idx,
+            fps,
+            entering_basket,
+            use_zone,
+            zone_ok,
+            recently_moving,
+            airborne,
+            config,
+            context["made_events"],
+            lambda msg: push_analysis_event(context, msg, event_callback),
+        )
+        if is_make:
+            made_track_id_this_frame = tid
+
+    stale_track_ids = [
+        tid for tid, tr in tracks.items()
+        if (frame_idx - tr["last_seen_frame"]) > config["TRACK_MAX_MISSED"]
+    ]
+    for tid in stale_track_ids:
+        del tracks[tid]
+
+    visible_tracks = [tr for tr in tracks.values() if tr["visible"]]
+    context["current_candidate_count"] = len(candidates)
+    context["current_trackable_count"] = sum(1 for cand in candidates if cand["trackable"])
+    context["current_visible_tracks"] = len(visible_tracks)
+    context["current_frame_idx"] = int(frame_idx)
+    context["last_lower"] = lower.copy()
+    context["last_upper"] = upper.copy()
+
+    return {
+        "mask": mask,
+        "hsv": hsv,
+        "candidates": candidates,
+        "made_track_id_this_frame": made_track_id_this_frame,
+        "lower": lower,
+        "upper": upper,
+    }
+
+
+def render_analysis_frame(frame, frame_result, context, show_mask=False):
+    """Render the current analysis state to an annotated BGR frame."""
+    if show_mask:
+        return cv2.cvtColor(frame_result["mask"], cv2.COLOR_GRAY2BGR)
+
+    vis = frame.copy()
+    frame_height = frame.shape[0]
+    draw_rois(vis, context["basket_poly"], context["zone_poly"], context["use_zone"])
+    draw_candidates(vis, frame_result["candidates"], context["config"])
+    draw_tracks(
+        vis,
+        context["tracks"],
+        context["current_frame_idx"],
+        frame_result["made_track_id_this_frame"],
+        context["config"],
+    )
+    draw_debug_info(
+        vis,
+        frame_result["candidates"],
+        context["tracks"],
+        context["current_frame_idx"],
+        context["use_zone"],
+        context["config"],
+        frame_height,
+        context["last_event_text"],
+        context["recent_events"],
+        context["made_events"],
+    )
+    return vis
 
 
 # ----------------------------

@@ -6,4 +6,5 @@ dependencies:
   - numpy
   - opencv
   - tk
+  - flask
   - yt-dlp
