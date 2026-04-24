@@ -40,7 +40,7 @@ CONFIG = {
     # Reject noise (increase if too many false detections)
     "MIN_CONTOUR_AREA": 80,
     # Reject giant blobs
-    "MAX_CONTOUR_AREA": 20_000,
+    "MAX_CONTOUR_AREA": 500,
     # Prefer smaller blobs over giant fuel piles
     "MAX_TRACKABLE_AREA": 8_000,
     "MIN_TRACKABLE_CIRCULARITY": 0.20,
@@ -57,14 +57,14 @@ CONFIG = {
     "MAKE_DEBUG_PRINT": True,
     "ZONE_WINDOW_FRAMES_FACTOR": 1.0,
     "AIRBORNE_Y_MAX_FACTOR": 0.86,
-    "DEBUG_OVERLAYS": True,
+    "DEBUG_OVERLAYS": False,
 
     # Filter visualization toggles (keys 1-5, all OFF by default)
-    "SHOW_REJECT_MIN_AREA": False,
-    "SHOW_REJECT_MAX_AREA": False,
-    "SHOW_REJECT_MAX_TRACKABLE": False,
-    "SHOW_REJECT_CIRCULARITY": False,
-    "SHOW_REJECT_ASPECT": False,
+    "SHOW_REJECT_MIN_AREA": True,
+    "SHOW_REJECT_MAX_AREA": True,
+    "SHOW_REJECT_MAX_TRACKABLE": True,
+    "SHOW_REJECT_CIRCULARITY": True,
+    "SHOW_REJECT_ASPECT": True,
     # Toggle with 't' -- switch main window between video and mask view
     "SHOW_MASK_VIEW": False,
 

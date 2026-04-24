@@ -3,6 +3,9 @@ assets/
 .vscode/
 scripts/roi_cache.json
 
+# Other project-specific
+*.mp4
+
 # ML-specific folders
 attempt-2/*
 dataset/*
