@@ -5,7 +5,11 @@ assets/
 # ML artifacts (large files)
 models/
 dataset/
+runs/
 *.pt
+
+# Testing files
+attempt-2/*
 
 # Python-specific
 __pycache__
