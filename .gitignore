@@ -3,6 +3,13 @@ assets/
 .vscode/
 scripts/roi_cache.json
 
+# ML-specific folders
+attempt-2/*
+dataset/*
+models/*
+runs/*
+*.pt
+
 # Python-specific
 __pycache__
 
